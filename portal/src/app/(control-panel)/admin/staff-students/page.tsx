@@ -1,0 +1,1041 @@
+'use client';
+
+import { useSession } from 'next-auth/react';
+import { useEffect, useState, useMemo } from 'react';
+import {
+	Box,
+	Paper,
+	Typography,
+	Tabs,
+	Tab,
+	Button,
+	Chip,
+	Dialog,
+	DialogTitle,
+	DialogContent,
+	DialogActions,
+	TextField,
+	FormControl,
+	InputLabel,
+	Select,
+	MenuItem,
+	Checkbox,
+	ListItemText,
+	OutlinedInput,
+	Grid,
+	CircularProgress
+} from '@mui/material';
+import FusePageSimple from '@fuse/core/FusePageSimple';
+import AuthGuardRedirect from '@auth/AuthGuardRedirect';
+import { MaterialReactTable, type MRT_ColumnDef } from 'material-react-table';
+
+const ITEM_HEIGHT = 48;
+const ITEM_PADDING_TOP = 8;
+const MenuProps = {
+	PaperProps: {
+		style: {
+			maxHeight: ITEM_HEIGHT * 4.5 + ITEM_PADDING_TOP,
+			width: 250
+		}
+	}
+};
+
+export default function AdminStaffStudents() {
+	const { data: session } = useSession();
+	const token = (session as any)?.backendToken;
+	const [users, setUsers] = useState<any[]>([]);
+	const [loading, setLoading] = useState(true);
+	const [activeTab, setActiveTab] = useState(0);
+	const roleMap = ['TEACHER', 'FINANCE', 'STUDENT', 'PARENT'];
+
+	const [classes, setClasses] = useState<any[]>([]);
+	const [subjects, setSubjects] = useState<any[]>([]);
+
+	// Open Create Dialog
+	const [openCreate, setOpenCreate] = useState(false);
+	const [formData, setFormData] = useState({
+		firstName: '',
+		lastName: '',
+		email: '',
+		phone: '',
+		customTempPassword: ''
+	});
+
+	// Open Edit Student Dialog
+	const [openEdit, setOpenEdit] = useState(false);
+	const [editTab, setEditTab] = useState(0);
+	const [uploadingField, setUploadingField] = useState<string | null>(null);
+	const [editFormData, setEditFormData] = useState({
+		id: '',
+		firstName: '',
+		lastName: '',
+		dob: '',
+		gender: '',
+		previousSchool: '',
+		medicalNotes: '',
+		studentEmail: '',
+		phone: '',
+		admissionNumber: '',
+		nemisNumber: '',
+		classId: '',
+		birthCertificateUrl: '',
+		reportCardUrl: '',
+		passportPhotoUrl: '',
+		// Parent info
+		parentName: '',
+		parentPhone: '',
+		parentEmail: '',
+		parentRelationship: '',
+		parentNationalId: '',
+		// Selected subjects
+		subjectIds: [] as string[]
+	});
+
+	const fetchClassesAndSubjects = () => {
+		if (!token) return;
+
+		fetch('http://localhost:4000/api/classes', { headers: { Authorization: `Bearer ${token}` } })
+			.then((res) => res.json())
+			.then((data) => setClasses(data || []))
+			.catch((err) => console.error(err));
+
+		fetch('http://localhost:4000/api/subjects', { headers: { Authorization: `Bearer ${token}` } })
+			.then((res) => res.json())
+			.then((data) => setSubjects(data || []))
+			.catch((err) => console.error(err));
+	};
+
+	const fetchUsers = () => {
+		if (!token) return;
+
+		setLoading(true);
+		fetch(`http://localhost:4000/api/users?role=${roleMap[activeTab]}&t=${Date.now()}`, {
+			headers: {
+				Authorization: `Bearer ${token}`,
+				'Cache-Control': 'no-cache',
+				Pragma: 'no-cache'
+			}
+		})
+			.then((res) => {
+				if (!res.ok) {
+					return res.json().then((err) => {
+						throw new Error(err.error || 'Failed to fetch users');
+					});
+				}
+
+				return res.json();
+			})
+			.then((data) => {
+				setUsers(data.users || []);
+				setLoading(false);
+			})
+			.catch((err) => {
+				console.error(err);
+				alert(err.message || 'Error fetching users');
+				setLoading(false);
+			});
+	};
+
+	useEffect(() => {
+		fetchUsers();
+		fetchClassesAndSubjects();
+	}, [token, activeTab]);
+
+	const handleCreate = async () => {
+		const role = roleMap[activeTab];
+		try {
+			const res = await fetch('http://localhost:4000/api/users', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Authorization: `Bearer ${token}`
+				},
+				body: JSON.stringify({ ...formData, role })
+			});
+
+			if (res.ok) {
+				const result = await res.json();
+				alert(`Account created successfully! Temp Password: ${result.tempPassword}`);
+				setFormData({ firstName: '', lastName: '', email: '', phone: '', customTempPassword: '' });
+				setOpenCreate(false);
+				fetchUsers();
+			} else {
+				alert('Failed to create user');
+			}
+		} catch (e) {
+			console.error(e);
+		}
+	};
+
+	const handleAction = async (id: string, action: string) => {
+		let customTempPassword = '';
+
+		if (action === 'FORCE_RESET') {
+			const confirmCustom = confirm(
+				'Do you want to set a custom temporary password? Click Cancel to auto-generate.'
+			);
+
+			if (confirmCustom) {
+				const input = prompt('Enter custom temporary password:');
+
+				if (input) customTempPassword = input;
+			}
+		}
+
+		const reason = action === 'SUSPEND' ? prompt('Enter reason for suspension:') : '';
+
+		if (action === 'SUSPEND' && !reason) return;
+
+		try {
+			const res = await fetch(`http://localhost:4000/api/users/${id}`, {
+				method: 'PATCH',
+				headers: {
+					'Content-Type': 'application/json',
+					Authorization: `Bearer ${token}`
+				},
+				body: JSON.stringify({ action, reason, customTempPassword })
+			});
+
+			if (res.ok) {
+				if (action === 'FORCE_RESET') {
+					const data = await res.json();
+					alert(`Password reset. New temp password: ${data.tempPassword}`);
+				} else if (
+					action === 'SUSPEND' ||
+					action === 'REACTIVATE' ||
+					action === 'COMPLETED' ||
+					action === 'TRANSFERRED'
+				) {
+					alert(`User status updated to ${action}`);
+				}
+
+				fetchUsers();
+			}
+		} catch (e) {
+			console.error(e);
+		}
+	};
+
+	const handleOpenEdit = (student: any) => {
+		const parentLink = student.childLinks?.[0]?.parent;
+		const parentRel = student.childLinks?.[0]?.relationship || '';
+		const studentSubjects = student.studentSubjects?.map((ss: any) => ss.subjectId) || [];
+
+		setEditFormData({
+			id: student.id,
+			firstName: student.firstName || '',
+			lastName: student.lastName || '',
+			dob: student.dob ? new Date(student.dob).toISOString().split('T')[0] : '',
+			gender: student.gender || '',
+			previousSchool: student.previousSchool || '',
+			medicalNotes: student.medicalNotes || '',
+			studentEmail: student.email || '',
+			phone: student.phone || '',
+			admissionNumber: student.admissionNumber || '',
+			nemisNumber: student.nemisNumber || '',
+			classId: student.classId || '',
+			birthCertificateUrl: student.birthCertificateUrl || '',
+			reportCardUrl: student.reportCardUrl || '',
+			passportPhotoUrl: student.passportPhotoUrl || '',
+			parentName: parentLink ? `${parentLink.firstName} ${parentLink.lastName}` : '',
+			parentPhone: parentLink ? parentLink.phone || '' : '',
+			parentEmail: parentLink ? parentLink.email || '' : '',
+			parentRelationship: parentRel || 'Guardian',
+			parentNationalId: parentLink ? parentLink.nationalId || '' : '',
+			subjectIds: studentSubjects
+		});
+		setEditTab(0);
+		setOpenEdit(true);
+	};
+
+	const handleFileUpload = async (
+		e: React.ChangeEvent<HTMLInputElement>,
+		fieldName: 'birthCertificateUrl' | 'reportCardUrl' | 'passportPhotoUrl'
+	) => {
+		const file = e.target.files?.[0];
+
+		if (!file) return;
+
+		setUploadingField(fieldName);
+		const uploadData = new FormData();
+		uploadData.append('file', file);
+
+		try {
+			const res = await fetch('http://localhost:4000/api/upload', {
+				method: 'POST',
+				headers: {
+					Authorization: `Bearer ${token}`
+				},
+				body: uploadData
+			});
+
+			if (res.ok) {
+				const result = await res.json();
+				setEditFormData((prev) => ({ ...prev, [fieldName]: result.url }));
+			} else {
+				const err = await res.json();
+				alert(err.error || 'Failed to upload file');
+			}
+		} catch (err: any) {
+			alert(err.message || 'An error occurred during upload');
+		} finally {
+			setUploadingField(null);
+		}
+	};
+
+	const handleSaveEdit = async () => {
+		try {
+			const res = await fetch(`http://localhost:4000/api/students/${editFormData.id}`, {
+				method: 'PATCH',
+				headers: {
+					'Content-Type': 'application/json',
+					Authorization: `Bearer ${token}`
+				},
+				body: JSON.stringify(editFormData)
+			});
+
+			if (res.ok) {
+				alert('Student details updated successfully!');
+				setOpenEdit(false);
+				fetchUsers();
+			} else {
+				const err = await res.json();
+				alert(err.error || 'Failed to update student details');
+			}
+		} catch (e: any) {
+			alert(e.message || 'Error updating student');
+		}
+	};
+
+	const columns = useMemo<MRT_ColumnDef<any>[]>(
+		() => [
+			{
+				accessorFn: (row) => `${row.firstName} ${row.lastName}`,
+				id: 'name',
+				header: 'Name'
+			},
+			...(activeTab === 2
+				? [
+						{
+							accessorKey: 'admissionNumber',
+							header: 'Admission No.'
+						},
+						{
+							accessorKey: 'nemisNumber',
+							header: 'NEMIS No.',
+							Cell: ({ cell }) => (cell.getValue() as string) || 'N/A'
+						},
+						{
+							id: 'parent',
+							header: 'Parent / Guardian',
+							accessorFn: (row) => {
+								const parent = row.childLinks?.[0]?.parent;
+								return parent ? `${parent.firstName} ${parent.lastName}` : 'N/A';
+							}
+						}
+					]
+				: []),
+			...(activeTab === 3
+				? [
+						{
+							id: 'student',
+							header: 'Linked Student(s)',
+							accessorFn: (row) => {
+								const student = row.parentLinks?.[0]?.student;
+								return student
+									? `${student.firstName} ${student.lastName} (${student.admissionNumber || 'N/A'})`
+									: 'N/A';
+							}
+						}
+					]
+				: []),
+			{
+				accessorKey: 'email',
+				header: 'Email / Phone',
+				Cell: ({ row }) => row.original.email || row.original.phone || 'N/A'
+			},
+			{
+				accessorKey: 'status',
+				header: 'Status',
+				Cell: ({ cell }) => {
+					const status = cell.getValue<string>();
+					let color: 'success' | 'warning' | 'error' | 'default' | 'info' = 'default';
+
+					if (status === 'ACTIVE') color = 'success';
+					else if (status === 'SUSPENDED') color = 'error';
+					else if (status === 'COMPLETED') color = 'info';
+					else if (status === 'TRANSFERRED') color = 'warning';
+
+					return (
+						<Chip
+							label={status}
+							size="small"
+							color={color}
+						/>
+					);
+				}
+			}
+		],
+		[activeTab]
+	);
+
+	return (
+		<AuthGuardRedirect auth={['SUPER_ADMIN', 'ADMIN']}>
+			<FusePageSimple
+				content={
+					<div className="mx-auto flex w-full max-w-7xl flex-col gap-32 px-24 py-32">
+						{/* Header */}
+						<div className="flex flex-col items-start justify-between gap-16 md:flex-row md:items-center">
+							<div>
+								<Typography
+									variant="h4"
+									className="font-extrabold tracking-tight"
+								>
+									Staff & Students
+								</Typography>
+								<Typography
+									color="text.secondary"
+									className="mt-4 font-medium"
+								>
+									Manage user accounts, roles, and profiles
+								</Typography>
+							</div>
+							{roleMap[activeTab] !== 'STUDENT' && (
+								<div className="flex items-center">
+									<Button
+										variant="contained"
+										color="secondary"
+										className="rounded-full px-24 shadow-sm"
+										onClick={() => setOpenCreate(true)}
+									>
+										Create{' '}
+										{roleMap[activeTab] === 'TEACHER'
+											? 'Teacher'
+											: roleMap[activeTab] === 'FINANCE'
+												? 'Finance Staff'
+												: 'Parent'}
+									</Button>
+								</div>
+							)}
+						</div>
+
+						<Paper className="bg-card flex flex-auto flex-col overflow-hidden rounded-2xl shadow">
+							<Tabs
+								value={activeTab}
+								onChange={(e, val) => setActiveTab(val)}
+								indicatorColor="primary"
+								textColor="primary"
+								className="border-b px-16"
+							>
+								<Tab
+									className="min-h-64 font-semibold"
+									label="Teachers"
+								/>
+								<Tab
+									className="min-h-64 font-semibold"
+									label="Finance"
+								/>
+								<Tab
+									className="min-h-64 font-semibold"
+									label="Students"
+								/>
+								<Tab
+									className="min-h-64 font-semibold"
+									label="Parents"
+								/>
+							</Tabs>
+
+							<MaterialReactTable
+								columns={columns}
+								data={users}
+								state={{ isLoading: loading }}
+								enableRowActions
+								positionActionsColumn="last"
+								renderRowActions={({ row }) => (
+									<Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+										{roleMap[activeTab] === 'STUDENT' && (
+											<Button
+												size="small"
+												variant="contained"
+												color="secondary"
+												className="rounded-full shadow-none"
+												onClick={() => handleOpenEdit(row.original)}
+											>
+												Edit
+											</Button>
+										)}
+										{['SUSPENDED', 'COMPLETED', 'TRANSFERRED'].includes(row.original.status) ? (
+											<Button
+												size="small"
+												color="success"
+												className="rounded-full"
+												onClick={() => handleAction(row.original.id, 'REACTIVATE')}
+											>
+												Reactivate
+											</Button>
+										) : (
+											<>
+												<Button
+													size="small"
+													color="error"
+													className="rounded-full"
+													onClick={() => handleAction(row.original.id, 'SUSPEND')}
+												>
+													Suspend
+												</Button>
+												{roleMap[activeTab] === 'STUDENT' && (
+													<>
+														<Button
+															size="small"
+															color="info"
+															className="rounded-full"
+															onClick={() => handleAction(row.original.id, 'COMPLETED')}
+														>
+															Complete
+														</Button>
+														<Button
+															size="small"
+															color="warning"
+															className="rounded-full"
+															onClick={() => handleAction(row.original.id, 'TRANSFERRED')}
+														>
+															Transfer
+														</Button>
+													</>
+												)}
+											</>
+										)}
+										<Button
+											size="small"
+											variant="outlined"
+											className="rounded-full"
+											onClick={() => handleAction(row.original.id, 'FORCE_RESET')}
+										>
+											Reset Pwd
+										</Button>
+									</Box>
+								)}
+								muiTablePaperProps={{ elevation: 0 }}
+							/>
+						</Paper>
+					</div>
+				}
+			/>
+
+			{/* CREATE STAFF/PARENT DIALOG */}
+			<Dialog
+				open={openCreate}
+				onClose={() => setOpenCreate(false)}
+				maxWidth="sm"
+				fullWidth
+			>
+				<DialogTitle>
+					Create New{' '}
+					{roleMap[activeTab] === 'TEACHER'
+						? 'Teacher'
+						: roleMap[activeTab] === 'FINANCE'
+							? 'Finance Staff'
+							: 'Parent'}
+				</DialogTitle>
+				<DialogContent>
+					<Box
+						display="flex"
+						flexDirection="column"
+						gap={2}
+						mt={1}
+					>
+						<TextField
+							label="First Name"
+							value={formData.firstName}
+							onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
+							fullWidth
+						/>
+						<TextField
+							label="Last Name"
+							value={formData.lastName}
+							onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
+							fullWidth
+						/>
+						<TextField
+							label="Email"
+							type="email"
+							value={formData.email}
+							onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+							fullWidth
+						/>
+						<TextField
+							label="Phone"
+							value={formData.phone}
+							onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+							fullWidth
+						/>
+						<TextField
+							label="Temporary Password (Leave empty for auto-generated)"
+							value={formData.customTempPassword}
+							onChange={(e) => setFormData({ ...formData, customTempPassword: e.target.value })}
+							fullWidth
+						/>
+					</Box>
+				</DialogContent>
+				<DialogActions>
+					<Button onClick={() => setOpenCreate(false)}>Cancel</Button>
+					<Button
+						onClick={handleCreate}
+						variant="contained"
+						color="primary"
+					>
+						Create
+					</Button>
+				</DialogActions>
+			</Dialog>
+
+			{/* EDIT STUDENT DIALOG */}
+			<Dialog
+				open={openEdit}
+				onClose={() => setOpenEdit(false)}
+				maxWidth="md"
+				fullWidth
+			>
+				<DialogTitle>Edit Student Information</DialogTitle>
+				<Paper
+					sx={{ mx: 3, mb: 2 }}
+					elevation={0}
+				>
+					<Tabs
+						value={editTab}
+						onChange={(e, val) => setEditTab(val)}
+						indicatorColor="primary"
+						textColor="primary"
+					>
+						<Tab label="Bio Data" />
+						<Tab label="Placement & Subjects" />
+						<Tab label="Parent details" />
+						<Tab label="Documents" />
+					</Tabs>
+				</Paper>
+
+				<DialogContent dividers>
+					{editTab === 0 && (
+						<Grid
+							container
+							spacing={3}
+						>
+							<Grid size={{ xs: 12, sm: 6 }}>
+								<TextField
+									label="First Name"
+									value={editFormData.firstName}
+									onChange={(e) => setEditFormData({ ...editFormData, firstName: e.target.value })}
+									fullWidth
+								/>
+							</Grid>
+							<Grid size={{ xs: 12, sm: 6 }}>
+								<TextField
+									label="Last Name"
+									value={editFormData.lastName}
+									onChange={(e) => setEditFormData({ ...editFormData, lastName: e.target.value })}
+									fullWidth
+								/>
+							</Grid>
+							<Grid size={{ xs: 12, sm: 6 }}>
+								<TextField
+									label="Admission Number"
+									value={editFormData.admissionNumber}
+									onChange={(e) =>
+										setEditFormData({ ...editFormData, admissionNumber: e.target.value })
+									}
+									fullWidth
+								/>
+							</Grid>
+							<Grid size={{ xs: 12, sm: 6 }}>
+								<TextField
+									label="NEMIS Number"
+									value={editFormData.nemisNumber}
+									onChange={(e) => setEditFormData({ ...editFormData, nemisNumber: e.target.value })}
+									fullWidth
+								/>
+							</Grid>
+							<Grid size={{ xs: 12, sm: 6 }}>
+								<TextField
+									label="Date of Birth"
+									type="date"
+									InputLabelProps={{ shrink: true }}
+									value={editFormData.dob}
+									onChange={(e) => setEditFormData({ ...editFormData, dob: e.target.value })}
+									fullWidth
+								/>
+							</Grid>
+							<Grid size={{ xs: 12, sm: 6 }}>
+								<FormControl fullWidth>
+									<InputLabel>Gender</InputLabel>
+									<Select
+										value={editFormData.gender}
+										label="Gender"
+										onChange={(e) => setEditFormData({ ...editFormData, gender: e.target.value })}
+									>
+										<MenuItem value="Male">Male</MenuItem>
+										<MenuItem value="Female">Female</MenuItem>
+									</Select>
+								</FormControl>
+							</Grid>
+							<Grid size={{ xs: 12, sm: 6 }}>
+								<TextField
+									label="Student Email"
+									type="email"
+									value={editFormData.studentEmail}
+									onChange={(e) => setEditFormData({ ...editFormData, studentEmail: e.target.value })}
+									fullWidth
+								/>
+							</Grid>
+							<Grid size={{ xs: 12, sm: 6 }}>
+								<TextField
+									label="Student Phone"
+									value={editFormData.phone}
+									onChange={(e) => setEditFormData({ ...editFormData, phone: e.target.value })}
+									fullWidth
+								/>
+							</Grid>
+							<Grid size={12}>
+								<TextField
+									label="Previous School"
+									value={editFormData.previousSchool}
+									onChange={(e) =>
+										setEditFormData({ ...editFormData, previousSchool: e.target.value })
+									}
+									fullWidth
+								/>
+							</Grid>
+							<Grid size={12}>
+								<TextField
+									label="Medical Notes"
+									multiline
+									rows={2}
+									value={editFormData.medicalNotes}
+									onChange={(e) => setEditFormData({ ...editFormData, medicalNotes: e.target.value })}
+									fullWidth
+								/>
+							</Grid>
+						</Grid>
+					)}
+
+					{editTab === 1 && (
+						<Grid
+							container
+							spacing={3}
+						>
+							<Grid size={12}>
+								<FormControl fullWidth>
+									<InputLabel>Class Placement</InputLabel>
+									<Select
+										value={editFormData.classId}
+										label="Class Placement"
+										onChange={(e) => setEditFormData({ ...editFormData, classId: e.target.value })}
+									>
+										{classes.map((cls) => (
+											<MenuItem
+												key={cls.id}
+												value={cls.id}
+											>
+												{cls.name}
+											</MenuItem>
+										))}
+									</Select>
+								</FormControl>
+							</Grid>
+							<Grid size={12}>
+								<FormControl fullWidth>
+									<InputLabel>Subjects Enrolled</InputLabel>
+									<Select
+										multiple
+										value={editFormData.subjectIds}
+										onChange={(e) =>
+											setEditFormData({
+												...editFormData,
+												subjectIds:
+													typeof e.target.value === 'string'
+														? e.target.value.split(',')
+														: (e.target.value as string[])
+											})
+										}
+										input={<OutlinedInput label="Subjects Enrolled" />}
+										renderValue={(selected) =>
+											selected
+												.map((id) => subjects.find((s) => s.id === id)?.name || id)
+												.join(', ')
+										}
+										MenuProps={MenuProps}
+									>
+										{subjects.map((subject) => (
+											<MenuItem
+												key={subject.id}
+												value={subject.id}
+											>
+												<Checkbox checked={editFormData.subjectIds.indexOf(subject.id) > -1} />
+												<ListItemText primary={subject.name} />
+											</MenuItem>
+										))}
+									</Select>
+								</FormControl>
+							</Grid>
+						</Grid>
+					)}
+
+					{editTab === 2 && (
+						<Grid
+							container
+							spacing={3}
+						>
+							<Grid size={{ xs: 12, sm: 6 }}>
+								<TextField
+									label="Parent Name"
+									value={editFormData.parentName}
+									onChange={(e) => setEditFormData({ ...editFormData, parentName: e.target.value })}
+									fullWidth
+								/>
+							</Grid>
+							<Grid size={{ xs: 12, sm: 6 }}>
+								<FormControl fullWidth>
+									<InputLabel>Relationship</InputLabel>
+									<Select
+										value={editFormData.parentRelationship}
+										label="Relationship"
+										onChange={(e) =>
+											setEditFormData({ ...editFormData, parentRelationship: e.target.value })
+										}
+									>
+										<MenuItem value="Father">Father</MenuItem>
+										<MenuItem value="Mother">Mother</MenuItem>
+										<MenuItem value="Guardian">Guardian</MenuItem>
+									</Select>
+								</FormControl>
+							</Grid>
+							<Grid size={{ xs: 12, sm: 6 }}>
+								<TextField
+									label="Parent Phone"
+									value={editFormData.parentPhone}
+									onChange={(e) => setEditFormData({ ...editFormData, parentPhone: e.target.value })}
+									fullWidth
+								/>
+							</Grid>
+							<Grid size={{ xs: 12, sm: 6 }}>
+								<TextField
+									label="Parent Email"
+									type="email"
+									value={editFormData.parentEmail}
+									onChange={(e) => setEditFormData({ ...editFormData, parentEmail: e.target.value })}
+									fullWidth
+								/>
+							</Grid>
+							<Grid size={12}>
+								<TextField
+									label="Parent National ID"
+									value={editFormData.parentNationalId}
+									onChange={(e) =>
+										setEditFormData({ ...editFormData, parentNationalId: e.target.value })
+									}
+									fullWidth
+								/>
+							</Grid>
+						</Grid>
+					)}
+
+					{editTab === 3 && (
+						<Box
+							display="flex"
+							flexDirection="column"
+							gap={3}
+						>
+							{/* Birth Certificate */}
+							<Paper
+								variant="outlined"
+								sx={{
+									p: 2,
+									display: 'flex',
+									alignItems: 'center',
+									justifyContent: 'space-between',
+									borderRadius: 2
+								}}
+							>
+								<Box>
+									<Typography
+										variant="subtitle1"
+										fontWeight="bold"
+									>
+										Birth Certificate
+									</Typography>
+									<Typography
+										variant="body2"
+										color="textSecondary"
+									>
+										{editFormData.birthCertificateUrl ? 'Uploaded' : 'No document selected'}
+									</Typography>
+								</Box>
+								<Box
+									display="flex"
+									alignItems="center"
+									gap={2}
+								>
+									{uploadingField === 'birthCertificateUrl' && <CircularProgress size={24} />}
+									{editFormData.birthCertificateUrl && (
+										<Button
+											size="small"
+											variant="text"
+											color="primary"
+											href={editFormData.birthCertificateUrl}
+											target="_blank"
+											rel="noopener noreferrer"
+										>
+											View
+										</Button>
+									)}
+									<Button
+										variant="outlined"
+										component="label"
+										disabled={!!uploadingField}
+									>
+										Choose File
+										<input
+											type="file"
+											hidden
+											onChange={(e) => handleFileUpload(e, 'birthCertificateUrl')}
+											accept="image/*,application/pdf"
+										/>
+									</Button>
+								</Box>
+							</Paper>
+
+							{/* Report Card */}
+							<Paper
+								variant="outlined"
+								sx={{
+									p: 2,
+									display: 'flex',
+									alignItems: 'center',
+									justifyContent: 'space-between',
+									borderRadius: 2
+								}}
+							>
+								<Box>
+									<Typography
+										variant="subtitle1"
+										fontWeight="bold"
+									>
+										Previous Report Card
+									</Typography>
+									<Typography
+										variant="body2"
+										color="textSecondary"
+									>
+										{editFormData.reportCardUrl ? 'Uploaded' : 'No document selected'}
+									</Typography>
+								</Box>
+								<Box
+									display="flex"
+									alignItems="center"
+									gap={2}
+								>
+									{uploadingField === 'reportCardUrl' && <CircularProgress size={24} />}
+									{editFormData.reportCardUrl && (
+										<Button
+											size="small"
+											variant="text"
+											color="primary"
+											href={editFormData.reportCardUrl}
+											target="_blank"
+											rel="noopener noreferrer"
+										>
+											View
+										</Button>
+									)}
+									<Button
+										variant="outlined"
+										component="label"
+										disabled={!!uploadingField}
+									>
+										Choose File
+										<input
+											type="file"
+											hidden
+											onChange={(e) => handleFileUpload(e, 'reportCardUrl')}
+											accept="image/*,application/pdf"
+										/>
+									</Button>
+								</Box>
+							</Paper>
+
+							{/* Passport Photo */}
+							<Paper
+								variant="outlined"
+								sx={{
+									p: 2,
+									display: 'flex',
+									alignItems: 'center',
+									justifyContent: 'space-between',
+									borderRadius: 2
+								}}
+							>
+								<Box>
+									<Typography
+										variant="subtitle1"
+										fontWeight="bold"
+									>
+										Passport Photo
+									</Typography>
+									<Typography
+										variant="body2"
+										color="textSecondary"
+									>
+										{editFormData.passportPhotoUrl ? 'Uploaded' : 'No photo selected'}
+									</Typography>
+								</Box>
+								<Box
+									display="flex"
+									alignItems="center"
+									gap={2}
+								>
+									{uploadingField === 'passportPhotoUrl' && <CircularProgress size={24} />}
+									{editFormData.passportPhotoUrl && (
+										<Button
+											size="small"
+											variant="text"
+											color="primary"
+											href={editFormData.passportPhotoUrl}
+											target="_blank"
+											rel="noopener noreferrer"
+										>
+											View
+										</Button>
+									)}
+									<Button
+										variant="outlined"
+										component="label"
+										disabled={!!uploadingField}
+									>
+										Choose Photo
+										<input
+											type="file"
+											hidden
+											onChange={(e) => handleFileUpload(e, 'passportPhotoUrl')}
+											accept="image/*"
+										/>
+									</Button>
+								</Box>
+							</Paper>
+						</Box>
+					)}
+				</DialogContent>
+
+				<DialogActions>
+					<Button onClick={() => setOpenEdit(false)}>Cancel</Button>
+					<Button
+						onClick={handleSaveEdit}
+						variant="contained"
+						color="primary"
+						disabled={!!uploadingField}
+					>
+						Save Changes
+					</Button>
+				</DialogActions>
+			</Dialog>
+		</AuthGuardRedirect>
+	);
+}
