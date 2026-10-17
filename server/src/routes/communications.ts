@@ -1,9 +1,8 @@
 import { Router } from 'express';
-import { PrismaClient } from '@prisma/client';
 import { requireAuth, requireRole, AuthRequest } from '../middleware/auth';
+import { prisma } from '../lib/prisma';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 const AT_API_KEY = process.env.AT_API_KEY || 'atsk_bdba2de31db65b01402c3ac980666c38e3a78153e2930d81dc6b4752cc6040a85a5d77a4';
 const AT_USERNAME = process.env.AT_USERNAME || 'sandbox';

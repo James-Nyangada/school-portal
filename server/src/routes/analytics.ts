@@ -1,40 +1,68 @@
 import { Router } from 'express';
-import { PrismaClient } from '@prisma/client';
 import { requireAuth, requireRole, AuthRequest } from '../middleware/auth';
+import { prisma } from '../lib/prisma';
+import { chronicAbsentees, comparison, performance } from '../services/analytics';
+import { renderBoardReport } from '../services/analyticsReport';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 // ============================================================
-// GET /api/analytics/performance — Class/Subject performance
+// GET /api/analytics/performance?term= — subject and class averages for a term, against the previous term
 // ============================================================
 router.get('/performance', requireAuth, requireRole('ADMIN'), async (req: AuthRequest, res) => {
   try {
-    // Aggregate grades by subject
-    const grades = await prisma.grade.findMany({
-      where: { status: 'PUBLISHED' },
-      include: { subject: { select: { name: true, code: true } } },
+    const data = await performance(typeof req.query.term === 'string' ? req.query.term : undefined);
+    res.json({
+      ...data,
+      subjectPerformance: data.subjects.map((s) => ({
+        subject: s.name,
+        averageScore: s.average ?? 0,
+        previousAverage: s.previousAverage,
+        change: s.change,
+        totalGraded: s.graded
+      }))
     });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
-    const subjectMap: Record<string, { total: number; count: number; name: string }> = {};
-    for (const g of grades) {
-      const subName = g.subject?.name || 'Unknown';
-      if (!subjectMap[subName]) subjectMap[subName] = { total: 0, count: 0, name: subName };
-      const subStats = subjectMap[subName]!;
-      const numVal = parseFloat(g.value);
-      if (!isNaN(numVal)) {
-        subStats.total += numVal;
-        subStats.count += 1;
-      }
-    }
+// ============================================================
+// GET /api/analytics/comparison?term= — headline figures this term vs the previous term
+// ============================================================
+router.get('/comparison', requireAuth, requireRole('ADMIN'), async (req: AuthRequest, res) => {
+  try {
+    res.json(await comparison(typeof req.query.term === 'string' ? req.query.term : undefined));
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
-    const subjectPerformance = Object.values(subjectMap).map((s) => ({
-      subject: s.name,
-      averageScore: s.count > 0 ? Math.round(s.total / s.count) : 0,
-      totalGraded: s.count,
-    }));
+// ============================================================
+// GET /api/analytics/absentees?month=YYYY-MM — chronic absentee list
+// ============================================================
+router.get('/absentees', requireAuth, requireRole('ADMIN'), async (req: AuthRequest, res) => {
+  try {
+    res.json(await chronicAbsentees(typeof req.query.month === 'string' ? req.query.month : undefined));
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
-    res.json({ subjectPerformance });
+// ============================================================
+// GET /api/analytics/report.pdf?term= — term report for board meetings
+// ============================================================
+router.get('/report.pdf', requireAuth, requireRole('ADMIN'), async (req: AuthRequest, res) => {
+  try {
+    const term = typeof req.query.term === 'string' ? req.query.term : undefined;
+    const pdf = await renderBoardReport(term);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="term-report-${(term || 'current').replace(/[^\w-]+/g, '_')}.pdf"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(pdf);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Internal server error' });

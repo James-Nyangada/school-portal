@@ -1,15 +1,22 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import { PrismaClient } from '@prisma/client';
+import { feeAccess } from '../services/fees';
+import { getSettings } from '../services/grading';
 
-const prisma = new PrismaClient();
 
 export interface AuthRequest extends Request {
   user?: {
     id: string;
     role: string;
+    /** Set while a Super Admin is viewing the portal as this user (read-only) */
+    impersonatorId?: string | undefined;
   };
 }
+
+export const JWT_SECRET = (process.env.JWT_SECRET || 'supersecret_for_dev_only_jemafaith') as string;
+
+/** The only write allowed while viewing as another user: ending the view-as session. */
+const VIEW_AS_EXIT = '/api/auth/impersonation/stop';
 
 export function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
@@ -23,16 +30,22 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
   }
 
   try {
-    const secret = (process.env.JWT_SECRET || 'supersecret_for_dev_only_jemafaith') as string;
-    const decoded = jwt.verify(token, secret) as any as { userId?: string; id?: string; role: string };
+    const decoded = jwt.verify(token, JWT_SECRET) as any as { userId?: string; id?: string; role: string; impersonatorId?: string };
     req.user = {
       id: decoded.userId || decoded.id || '',
-      role: decoded.role
+      role: decoded.role,
+      impersonatorId: decoded.impersonatorId
     };
-    next();
   } catch (error) {
     return res.status(401).json({ error: 'Unauthorized: Invalid token' });
   }
+
+  // View-as is strictly read-only so a Super Admin can never act under someone else's name
+  if (req.user.impersonatorId && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.originalUrl.split('?')[0] !== VIEW_AS_EXIT) {
+    return res.status(403).json({ error: 'You are viewing as another user. Changes are disabled until you exit view-as mode.' });
+  }
+
+  next();
 }
 
 export function requireRole(...roles: string[]) {
@@ -49,27 +62,15 @@ export function requireRole(...roles: string[]) {
   };
 }
 
+/** Fee gate: the settings threshold for ongoing students, full clearance for certificates and leavers' grades. */
 export async function checkAccess(studentId: string, resourceType: 'Grades' | 'Timetable' | 'Certificates'): Promise<boolean> {
-  const records = await prisma.feeRecord.findMany({
-    where: { studentId }
-  });
+  return (await feeAccess(studentId, resourceType)).allowed;
+}
 
-  let totalBilled = 0;
-  let totalPaid = 0;
-
-  for (const record of records) {
-    totalBilled += record.totalBilled;
-    totalPaid += record.amountPaid;
-  }
-
-  if (totalBilled === 0) return true;
-
-  const ratio = totalPaid / totalBilled;
-
-  if (resourceType === 'Certificates') {
-    return ratio >= 1.0;
-  } else {
-    // Grades or Timetable
-    return ratio >= 0.5;
-  }
+/** Blocks a route while its module is switched off in System Settings → Feature Toggles. */
+export function requireFeature(feature: 'newsletterEnabled' | 'assignmentsEnabled', label: string) {
+  return async (_req: AuthRequest, res: Response, next: NextFunction) => {
+    if ((await getSettings())[feature]) return next();
+    res.status(403).json({ error: `${label} are switched off for this school. A Super Admin can turn them on in System Settings.` });
+  };
 }

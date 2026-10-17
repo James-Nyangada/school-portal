@@ -1,14 +1,28 @@
 import { Router } from 'express';
-import { PrismaClient } from '@prisma/client';
 import { requireAuth, requireRole } from '../middleware/auth';
+import { prisma } from '../lib/prisma';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 // Get all subjects
 router.get('/', requireAuth, async (req, res) => {
   try {
     const subjects = await prisma.subject.findMany({
+      orderBy: { name: 'asc' },
+      include: { _count: { select: { taughtBy: true, classSubjects: true } } },
+    });
+    res.json(subjects);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to fetch subjects' });
+  }
+});
+
+// Get the subjects the signed-in teacher teaches (set on the staff page)
+router.get('/mine', requireAuth, async (req: any, res) => {
+  try {
+    const subjects = await prisma.subject.findMany({
+      where: { taughtBy: { some: { teacherId: req.user.id } } },
       orderBy: { name: 'asc' },
     });
     res.json(subjects);

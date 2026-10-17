@@ -1,568 +1,555 @@
-# Timetable Generation Module — Implementation Guide
+# Timetabling Module — Implementation Plan
 
-## Purpose
+Companion to `school-timetabling-feature.md` (the design guide). The design guide says **what** to build; this plan says **in what order, in which files, and how to know each step is done**.
 
-Add an automatic timetable engine to the school management system that can:
-1. Generate **class timetables** (weekly grid, subjects/teachers/rooms, with parallel/split groups like PE Boys/Girls or Sport Group 1/2)
-2. Generate **teacher timetables** (same underlying data, pivoted by teacher)
-3. Generate **exam timetables** (conflict-free exam sessions, invigilator + room assignment)
-4. Export any of the above as a **downloadable PDF** matching a printed-grid layout (aSc TimeTables style)
-5. **Publish/share** a generated timetable with a given class or teacher
-
-This document specifies data model, constraint logic, generation algorithm, API surface, PDF rendering, and rollout plan. Stack assumptions: Next.js (frontend), Express.js (API), PostgreSQL (data), but the logic is stack-agnostic.
+**Stack:** Next.js (App Router) · Express.js · Supabase (Postgres, Auth, Realtime) · Tailwind CSS
+**Assumed team:** 1 full-stack developer. Estimates are working days.
+**Total:** roughly **8–10 weeks** to a production-ready v1, with a usable manual timetabler by about week 5.
 
 ---
 
-## 1. Core Concepts (borrowed from aSc TimeTables)
+## 0. Ground Rules
 
-Understanding these terms is essential before touching the schema — they map directly to tables below.
-
-| aSc concept | Meaning | Your equivalent |
-|---|---|---|
-| **Subject** | A course, e.g. Math, Sport | `subjects` table |
-| **Class** | A cohort of students, e.g. "5.A" | `classes` table |
-| **Teacher** | Staff who can teach one or more subjects | `teachers` table |
-| **Room/Classroom** | Physical space, may have a type (lab, gym, normal) | `rooms` table |
-| **Period/Time slot** | A fixed daily time block (e.g. Period 1 = 08:00–08:45) | `periods` table |
-| **Card / Lesson** | One occurrence of "Subject X taught by Teacher Y to Class Z in Room W" — the atomic unit that gets placed onto the grid | `lesson_requirements` (need) → `timetable_entries` (placed) |
-| **Subject-group / Split** | A class splitting into subgroups for a subject (e.g. "Sport Group 1" vs "Group 2", or "PE Boys"/"PE Girls") each taught by a **different** teacher **at the same time** | `student_groups` + `parallel_group_id` link |
-| **Card relationship / parallel cards** | Two or more cards that MUST occupy the identical day+period across the week (this is what makes split groups line up on the grid) | `lesson_requirements.parallel_group_id` |
-| **Availability** | Per-teacher/per-room slots that are blocked (unavailable) | `teacher_availability`, `room_availability` |
-| **Card duration** | Some lessons span 2 consecutive periods (double period) | `lesson_requirements.duration_periods` |
-| **Generator** | The constraint-solving engine that assigns every card a day+period+room | Section 4 |
-| **Substitution** | Ad hoc teacher swap for a single day due to absence (not covered by generator, but schema should support it) | `substitutions` table (Section 8) |
+1. **Build vertically.** Each phase ends with something runnable and testable, not half of every layer.
+2. **The shared validator is the source of truth.** Frontend, backend and generator all import the same `canPlace`. Never duplicate clash logic.
+3. **Database is the last line of defence.** Every write to `tt_entries` writes `tt_occupancy` in the **same transaction**.
+4. **Use a direct Postgres connection in Express for timetable writes.** `supabase-js` cannot run multi-statement transactions. Use `postgres` (postgres.js) with the Supabase connection string, and keep `supabase-js` for auth checks and Realtime.
+5. **The generator never runs inside a request.** It runs as a background job, so Express must be hosted somewhere that allows long-running processes (Render, Railway, Fly.io, a VPS). Vercel serverless functions are not suitable for the generator.
 
 ---
 
-## 2. Database Schema (PostgreSQL)
+## Phase 0 — Project Setup (1–2 days)
 
-```sql
--- ========== ORGANIZATIONAL ==========
+### Tasks
+- [ ] Convert the repo to a **pnpm workspace** (or Turborepo) so Next.js and Express can share a package:
+  ```
+  /apps/web        (existing Next.js)
+  /apps/api        (existing Express)
+  /packages/timetable-core
+  /supabase        (migrations, seed)
+  ```
+  `pnpm-workspace.yaml`:
+  ```yaml
+  packages:
+    - "apps/*"
+    - "packages/*"
+  ```
+- [ ] Create `packages/timetable-core` with TypeScript, `tsup` for building, and Vitest:
+  ```bash
+  cd packages/timetable-core
+  pnpm init
+  pnpm add -D typescript tsup vitest
+  ```
+  `package.json` → `"name": "@school/timetable-core"`, `"main": "dist/index.js"`, `"types": "dist/index.d.ts"`.
+- [ ] Add it as a dependency in both apps: `"@school/timetable-core": "workspace:*"`.
+- [ ] Install the Supabase CLI and link the project:
+  ```bash
+  pnpm add -D supabase
+  npx supabase init
+  npx supabase link --project-ref <ref>
+  ```
+- [ ] API dependencies:
+  ```bash
+  cd apps/api
+  pnpm add postgres zod pg-boss @supabase/supabase-js exceljs
+  pnpm add -D @types/express vitest supertest
+  ```
+- [ ] Web dependencies:
+  ```bash
+  cd apps/web
+  pnpm add @tanstack/react-query zustand @dnd-kit/core @dnd-kit/utilities react-hook-form zod @hookform/resolvers
+  ```
+- [ ] Environment variables:
+  ```
+  # apps/api/.env
+  DATABASE_URL=postgresql://...      # Supabase direct/pooler (session mode) connection string
+  SUPABASE_URL=...
+  SUPABASE_SERVICE_ROLE_KEY=...
+  GENERATOR_TIME_LIMIT_SEC=60
 
-CREATE TABLE terms (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    school_id       UUID NOT NULL REFERENCES schools(id),
-    name            TEXT NOT NULL,             -- "Term 2, 2026"
-    start_date      DATE NOT NULL,
-    end_date        DATE NOT NULL,
-    is_active       BOOLEAN NOT NULL DEFAULT false
-);
+  # apps/web/.env.local
+  NEXT_PUBLIC_SUPABASE_URL=...
+  NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+  NEXT_PUBLIC_API_URL=http://localhost:4000
+  ```
 
-CREATE TABLE working_days (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    term_id         UUID NOT NULL REFERENCES terms(id) ON DELETE CASCADE,
-    day_of_week     SMALLINT NOT NULL CHECK (day_of_week BETWEEN 0 AND 6) -- 0=Mon
-);
-
-CREATE TABLE periods (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    school_id       UUID NOT NULL REFERENCES schools(id),
-    period_index    SMALLINT NOT NULL,          -- 0,1,2,3... order on grid
-    label           TEXT,                       -- "Period 1", or null for breaks
-    start_time      TIME NOT NULL,
-    end_time        TIME NOT NULL,
-    is_break        BOOLEAN NOT NULL DEFAULT false, -- lunch/short break, excluded from lesson placement
-    UNIQUE (school_id, period_index)
-);
-
--- ========== ACADEMIC ENTITIES ==========
-
-CREATE TABLE grades (              -- "Grade 5", "Form 3"
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    school_id       UUID NOT NULL REFERENCES schools(id),
-    name            TEXT NOT NULL,
-    curriculum      TEXT NOT NULL DEFAULT 'CBC'  -- CBC / 8-4-4 / IGCSE etc.
-);
-
-CREATE TABLE classes (              -- "5.A" — a specific stream within a grade
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    grade_id        UUID NOT NULL REFERENCES grades(id),
-    name            TEXT NOT NULL,               -- "5.A"
-    student_count   INT NOT NULL DEFAULT 0
-);
-
-CREATE TABLE subjects (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    school_id       UUID NOT NULL REFERENCES schools(id),
-    code            TEXT NOT NULL,               -- "Sp", "Ma", "Ge"
-    name            TEXT NOT NULL,                -- "Sport", "Mathematics"
-    color_hex       TEXT DEFAULT '#CCCCCC',       -- for PDF/grid rendering
-    requires_room_type TEXT DEFAULT 'normal'      -- normal|lab|gym|field|music
-);
-
-CREATE TABLE teachers (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    school_id       UUID NOT NULL REFERENCES schools(id),
-    staff_id        UUID REFERENCES users(id),    -- link to login/account
-    initials        TEXT NOT NULL,                 -- "Jo", "Ma" — shown on grid
-    full_name       TEXT NOT NULL,
-    max_periods_per_day    SMALLINT DEFAULT 8,
-    max_periods_per_week    SMALLINT DEFAULT 30
-);
-
-CREATE TABLE teacher_subjects (      -- which teacher can teach which subject
-    teacher_id      UUID NOT NULL REFERENCES teachers(id) ON DELETE CASCADE,
-    subject_id      UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
-    PRIMARY KEY (teacher_id, subject_id)
-);
-
-CREATE TABLE rooms (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    school_id       UUID NOT NULL REFERENCES schools(id),
-    code            TEXT NOT NULL,                -- "S106"
-    room_type       TEXT DEFAULT 'normal',
-    capacity        INT DEFAULT 40,
-    building        TEXT                          -- for transfer-time logic (Section 4.6)
-);
-
--- ========== AVAILABILITY (hard constraints) ==========
-
-CREATE TABLE teacher_availability (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    teacher_id      UUID NOT NULL REFERENCES teachers(id) ON DELETE CASCADE,
-    day_of_week     SMALLINT NOT NULL,
-    period_id       UUID NOT NULL REFERENCES periods(id),
-    status          TEXT NOT NULL DEFAULT 'unavailable' -- unavailable|preferred_free
-);
-
-CREATE TABLE room_availability (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    room_id         UUID NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-    day_of_week     SMALLINT NOT NULL,
-    period_id       UUID NOT NULL REFERENCES periods(id),
-    status          TEXT NOT NULL DEFAULT 'unavailable'
-);
-
--- ========== STUDENT GROUPS (for splits like PE Boys/Girls) ==========
-
-CREATE TABLE student_groups (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    class_id        UUID NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
-    label           TEXT NOT NULL                 -- "Group 1", "Boys"
-);
-
--- ========== LESSON REQUIREMENTS (the "need", before placement) ==========
-
-CREATE TABLE lesson_requirements (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    term_id             UUID NOT NULL REFERENCES terms(id) ON DELETE CASCADE,
-    class_id            UUID NOT NULL REFERENCES classes(id),
-    subject_id          UUID NOT NULL REFERENCES subjects(id),
-    teacher_id          UUID NOT NULL REFERENCES teachers(id),
-    student_group_id    UUID REFERENCES student_groups(id),   -- null = whole class
-    room_id             UUID REFERENCES rooms(id),             -- null = any matching room_type
-    periods_per_week    SMALLINT NOT NULL,
-    duration_periods    SMALLINT NOT NULL DEFAULT 1,           -- 2 = double period
-    parallel_group_id   UUID,                                  -- shared id across cards that must sync in time
-    priority            SMALLINT NOT NULL DEFAULT 5,           -- 1 (hardest to place) .. 10 (flexible), drives placement order
-    prefer_period_range  INT4RANGE,                            -- e.g. [0,3) morning-only preference
-    avoid_double_same_day BOOLEAN DEFAULT true
-);
-
--- ========== PLACED TIMETABLE (the "solution") ==========
-
-CREATE TABLE timetables (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    term_id         UUID NOT NULL REFERENCES terms(id),
-    version         INT NOT NULL DEFAULT 1,
-    status          TEXT NOT NULL DEFAULT 'draft',  -- draft|generating|failed|published|archived
-    generated_at    TIMESTAMPTZ,
-    published_at    TIMESTAMPTZ,
-    score            NUMERIC,                        -- soft-constraint quality score
-    UNIQUE (term_id, version)
-);
-
-CREATE TABLE timetable_entries (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    timetable_id        UUID NOT NULL REFERENCES timetables(id) ON DELETE CASCADE,
-    lesson_requirement_id UUID NOT NULL REFERENCES lesson_requirements(id),
-    day_of_week         SMALLINT NOT NULL,
-    period_id           UUID NOT NULL REFERENCES periods(id),
-    room_id             UUID NOT NULL REFERENCES rooms(id),
-    UNIQUE (timetable_id, lesson_requirement_id, day_of_week, period_id)
-);
-
--- Fast conflict-checking indexes — critical for generator performance
-CREATE INDEX idx_entries_teacher_slot ON timetable_entries (timetable_id, day_of_week, period_id);
-CREATE INDEX idx_entries_room_slot ON timetable_entries (timetable_id, room_id, day_of_week, period_id);
-
--- ========== EXAMS ==========
-
-CREATE TABLE exams (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    term_id         UUID NOT NULL REFERENCES terms(id),
-    name            TEXT NOT NULL,                 -- "Mid-Term Exams"
-    start_date      DATE NOT NULL,
-    end_date        DATE NOT NULL
-);
-
-CREATE TABLE exam_sessions (                        -- "Day 1 Morning 08:00-10:00"
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    exam_id         UUID NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
-    date            DATE NOT NULL,
-    start_time      TIME NOT NULL,
-    end_time        TIME NOT NULL,
-    label           TEXT                            -- "Morning", "Afternoon"
-);
-
-CREATE TABLE exam_papers (                           -- one exam paper = one subject+grade
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    exam_id         UUID NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
-    grade_id        UUID NOT NULL REFERENCES grades(id),
-    subject_id      UUID NOT NULL REFERENCES subjects(id),
-    duration_minutes INT NOT NULL DEFAULT 120
-);
-
-CREATE TABLE exam_placements (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    exam_paper_id   UUID NOT NULL REFERENCES exam_papers(id) ON DELETE CASCADE,
-    session_id      UUID NOT NULL REFERENCES exam_sessions(id),
-    room_id         UUID NOT NULL REFERENCES rooms(id),
-    invigilator_id  UUID NOT NULL REFERENCES teachers(id)
-);
-
--- ========== SUBSTITUTIONS (day-to-day, not generator output) ==========
-
-CREATE TABLE substitutions (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    timetable_entry_id  UUID NOT NULL REFERENCES timetable_entries(id),
-    date                DATE NOT NULL,
-    absent_teacher_id   UUID NOT NULL REFERENCES teachers(id),
-    covering_teacher_id UUID NOT NULL REFERENCES teachers(id),
-    reason              TEXT
-);
-
--- ========== SHARING / PUBLISHING ==========
-
-CREATE TABLE timetable_shares (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    timetable_id    UUID NOT NULL REFERENCES timetables(id),
-    scope_type      TEXT NOT NULL,      -- 'class' | 'teacher' | 'grade' | 'school'
-    scope_id        UUID,               -- class_id / teacher_id / grade_id, null for school-wide
-    pdf_url         TEXT,
-    shared_at       TIMESTAMPTZ DEFAULT now(),
-    shared_via      TEXT                -- email|sms|portal
-);
-```
-
-### Key design notes
-- `parallel_group_id` is what links "Sport – Group 1" and "Sport – Group 2" so the generator always places them in the same day+period, reproducing the dashed-line split cell in your reference image.
-- `priority` drives the most-constrained-first ordering in the generator (Section 4.2) — a school computer lab with only 2 rooms should have `priority = 1` (place first), while a flexible subject with many free teachers can be `priority = 10`.
-- `timetable_entries` is versioned via `timetables.version` — regenerating never overwrites a published timetable; it creates a new draft version.
+### Done when
+`pnpm -r build` succeeds, and both apps can import a dummy `hello()` from `@school/timetable-core`.
 
 ---
 
-## 3. Constraint Catalogue
+## Phase 1 — Database (2–3 days)
 
-### 3.1 Hard constraints (must NEVER be violated — reject any placement that breaks these)
+### Tasks
+- [ ] Migration `supabase/migrations/<ts>_tt_core.sql`: all tables from section 3 of the design guide (`tt_days`, `tt_periods`, `tt_teachers`, `tt_classes`, `tt_rooms`, `tt_subjects`, `tt_unavailability`, `tt_timetables`, `tt_parallel_groups`, `tt_lessons`, `tt_lesson_classes`, `tt_lesson_teachers`, `tt_entries`, `tt_occupancy`).
+- [ ] Migration `<ts>_tt_jobs_subs.sql`:
+  ```sql
+  create table tt_jobs (
+    id uuid primary key default gen_random_uuid(),
+    timetable_id uuid not null references tt_timetables(id) on delete cascade,
+    status text not null default 'queued' check (status in ('queued','running','done','failed','cancelled')),
+    progress smallint not null default 0,
+    placed int, total int,
+    result jsonb,                 -- unplaced cards + reasons, score
+    error text,
+    created_by uuid references auth.users(id),
+    created_at timestamptz default now(),
+    finished_at timestamptz
+  );
 
-| # | Constraint | Check |
-|---|---|---|
-| H1 | Teacher not double-booked | No two entries share `(timetable_id, teacher, day, period)` |
-| H2 | Class/subgroup not double-booked | No two entries share `(timetable_id, class_id or student_group_id, day, period)` |
-| H3 | Room not double-booked | No two entries share `(timetable_id, room_id, day, period)`, unless room explicitly allows co-use (e.g. shared gym under capacity) |
-| H4 | Teacher availability respected | Slot not in `teacher_availability` with `status='unavailable'` |
-| H5 | Room availability respected | Slot not in `room_availability` with `status='unavailable'` |
-| H6 | Room type match | `room.room_type` matches `subject.requires_room_type` (or `lesson_requirements.room_id` is explicitly pinned) |
-| H7 | Room capacity | `room.capacity >= class.student_count` (or subgroup size) |
-| H8 | Parallel cards synced | All cards sharing a `parallel_group_id` occupy the identical `(day, period)` |
-| H9 | Double-period contiguity | If `duration_periods = 2`, both consecutive periods must be free for teacher/class/room, and must not straddle a break |
-| H10 | Weekly quota met | Every `lesson_requirement` has exactly `periods_per_week` entries placed by the time generation completes |
+  create table tt_substitutions (
+    id uuid primary key default gen_random_uuid(),
+    school_id uuid not null,
+    date date not null,
+    entry_id uuid not null references tt_entries(id) on delete cascade,
+    absent_teacher_id uuid not null references tt_teachers(id),
+    cover_teacher_id uuid references tt_teachers(id),
+    note text,
+    unique (date, entry_id)
+  );
 
-### 3.2 Soft constraints (scored — generator tries to minimize total penalty)
+  create table tt_settings (
+    school_id uuid primary key references schools(id),
+    ignore_general_rooms boolean not null default true,
+    rules jsonb not null default '{"spreadSubjects":true,"noSameSubjectTwiceADay":true,"minimiseTeacherGaps":true,"respectMaxPerDay":true,"preferMorning":true}'
+  );
+  ```
+- [ ] Indexes for read paths:
+  ```sql
+  create index on tt_entries (timetable_id, day_index, period_index);
+  create index on tt_lesson_classes (class_id);
+  create index on tt_lesson_teachers (teacher_id);
+  create index on tt_occupancy (timetable_id, resource_type, resource_id);
+  ```
+- [ ] Migration `<ts>_tt_rls.sql`. Enable RLS on every `tt_*` table. Helper:
+  ```sql
+  create or replace function tt_has_role(p_school uuid, p_roles text[])
+  returns boolean language sql stable security definer as $$
+    select exists (
+      select 1 from school_members m
+      where m.user_id = auth.uid() and m.school_id = p_school and m.role = any(p_roles)
+    );
+  $$;
+  ```
+  Policies:
+  - Setup tables: `select/insert/update/delete` when `tt_has_role(school_id, '{admin,timetabler}')`.
+  - `tt_entries` select: timetabler, **or** the parent timetable is `published` and the user is a member of that school.
+  - Enable Realtime on `tt_jobs` (Dashboard → Database → Replication, or `alter publication supabase_realtime add table tt_jobs;`).
 
-| # | Constraint | Typical weight |
-|---|---|---|
-| S1 | Teacher gaps (free period sandwiched between two teaching periods in a day) | High penalty per gap |
-| S2 | Same subject appearing more than once a day for a class (unless double period intended) | Medium |
-| S3 | Uneven spread of a subject's periods across the week (e.g. all 3 Math periods on Monday) | Medium |
-| S4 | Heavy/cognitive subjects (Math, Sciences) scheduled late in the day | Low–Medium |
-| S5 | Teacher's `preferred_free` slots used | High |
-| S6 | Teacher daily load imbalance (e.g. 6 periods Monday, 1 period Tuesday) | Medium |
-| S7 | Building-transfer time — consecutive periods for one teacher in different buildings without enough break time | High (Section 4.6) |
-| S8 | First/last period avoided for a specific subject (admin-defined per-subject rule) | Low |
+  Adapt `school_members` to whatever table your portal already uses for roles.
+- [ ] Seed `supabase/seed/tt_demo.sql`: 5 days, 9 periods in 3 blocks, 16 classes (Form 1–4 × 4 streams), 45 teachers, 12 subjects, 3 labs, a computer room, about 200 lessons including one option block for Form 3 and Form 4.
+- [ ] Generate types:
+  ```bash
+  npx supabase gen types typescript --linked > packages/timetable-core/src/db.types.ts
+  ```
 
-Weights should be configurable per school (a JSON `constraint_weights` config row), since priorities differ (a school offering many parallel labs will care more about S7/room contention than S4).
-
----
-
-## 4. Generation Algorithm
-
-This is a **Constraint Satisfaction Problem (CSP)** solved via greedy construction + backtracking + local-search optimization — the same family of algorithm aSc/FET-style engines use.
-
-### 4.1 Pre-processing — "explode" requirements into placement units
-
-```
-for each lesson_requirement:
-    create `periods_per_week` lesson instances
-    if duration_periods == 2:
-        pair them into double-period blocks (fewer, larger units)
-
-group instances that share parallel_group_id into a single PlacementUnit
-  (placing a unit means placing ALL its member cards atomically)
-```
-
-### 4.2 Ordering — most-constrained-first
-
-Sort all `PlacementUnit`s by a constrainedness score (higher = place earlier):
-```
-score = 
-    (1 / count_of_valid_teacher_free_slots) 
-  + (requires_scarce_room_type ? +50 : 0)
-  + (is_parallel_group ? +30 : 0)
-  + (10 - lesson_requirements.priority)   -- lower priority number = harder = placed first
-```
-Placing the hardest-to-place lessons first (labs, split groups, teachers with few free slots) dramatically reduces backtracking later — this mirrors why aSc places "Sport" (2-teacher split) before flexible single-teacher subjects.
-
-### 4.3 Greedy placement with backtracking
-
-```
-placed = []
-queue = ordered PlacementUnits
-
-function place_all(queue):
-    if queue is empty: return SUCCESS
-    unit = queue.pop_front()
-    candidates = get_valid_slots(unit)   # checks H1–H9 against `placed`
-    candidates = sort_by_soft_score(candidates)  # best S1–S8 score first
-
-    for slot in candidates (try top-K, K ~ 5-10):
-        tentatively place unit at slot
-        placed.append(unit)
-        if place_all(queue):
-            return SUCCESS
-        # backtrack
-        placed.remove(unit)
-
-    # no candidate worked — try backjumping:
-    # remove the most recently placed CONFLICTING unit, requeue it, retry
-    if backjump_possible:
-        victim = find_conflicting_recent_unit(unit)
-        placed.remove(victim)
-        queue.push_front(victim)
-        queue.push_front(unit)
-        return place_all(queue)
-
-    return FAILURE(unit)   # report exactly which lesson could not be placed and why
-```
-
-Practical limits: cap total backtracking attempts (e.g. 50,000) and total runtime (e.g. 30s) before falling back to reporting partial failure — never let generation hang indefinitely on a genuinely infeasible dataset (e.g. a teacher assigned more periods than slots exist in the week).
-
-### 4.4 Local search / optimization pass (post-placement polish)
-
-Once every unit has a hard-constraint-valid slot:
-
-```
-repeat for N iterations (e.g. 20,000) or until time budget exhausted:
-    pick two placed units at random (or targeted: pick from units with worst local soft score)
-    if swapping their (day, period, room) assignments is still hard-constraint-valid:
-        compute soft_score_before and soft_score_after
-        if soft_score_after < soft_score_before (lower penalty):
-            accept swap
-        else:
-            accept with small probability (simulated annealing, probability decays over iterations)
-            else revert
-```
-This is what turns a "technically valid but full of gaps" timetable into the clean, dense grid seen in the reference image.
-
-### 4.5 Convergence & output
-
-- Store final `score` (sum of soft penalties) on the `timetables` row.
-- Persist every placed unit's member cards as rows in `timetable_entries`.
-- If any unit failed to place (Step 4.3 FAILURE), set `timetables.status = 'failed'` and store a structured failure list — do not silently produce an incomplete timetable.
-
-### 4.6 Building-transfer logic (matches aSc's 2026 "Building Transfer Assistant")
-
-For any teacher with consecutive periods in `room_a.building != room_b.building`:
-```
-required_gap = building_transfer_minutes[building_a][building_b]  -- configurable matrix
-available_gap = time_between(period_a.end_time, period_b.start_time)
-if available_gap < required_gap:
-    treat as soft violation (S7) unless a break period sits between them with
-    break.duration >= required_gap, in which case it's fine
-```
-
-### 4.7 Failure reporting (critical for usability)
-
-Never expose raw constraint-solver output to school admins. Translate failures into actionable messages:
-```
-"Could not place: Chemistry, Grade 10B, 3rd of 5 required periods.
- Reason: Teacher Mwangi has only 4 free periods this week but needs 5.
- Suggestion: Reduce periods_per_week, add a free slot, or reassign a period to another teacher."
-```
-Build this by tracing which hard constraint (H1–H9) blocked every failed candidate slot and picking the most frequent blocker as the primary reason.
+### Done when
+- `npx supabase db reset` applies migrations and seed cleanly.
+- A manual SQL test that inserts two occupancy rows for the same teacher and slot fails with `23505`.
 
 ---
 
-## 5. Exam Timetable Logic (separate, simpler algorithm)
+## Phase 2 — Express Foundation & Setup CRUD (3 days)
 
-Exams don't need period-optimization — they need **conflict-free session assignment**, which is a graph-coloring problem.
-
-### 5.1 Build the conflict graph
+### Files
 ```
-nodes = all exam_papers for this exam
-edge(paper_A, paper_B) exists if any single student is enrolled in both
-  (in practice: same grade+stream almost always conflicts; cross-grade electives need explicit student enrollment data)
-```
-
-### 5.2 Welsh-Powell greedy coloring
-```
-sort papers by degree (number of conflicts) DESCENDING
-sessions_used = []
-for paper in sorted_papers:
-    for session in existing sessions_used (in order):
-        if paper conflicts with no paper already in `session`:
-            assign paper to session
-            break
-    else:
-        create a new session, assign paper to it
-```
-This yields the minimum number of exam sessions needed with zero student double-bookings.
-
-### 5.3 Room + invigilator assignment (same hard-constraint pattern as Section 3.1)
-```
-for each (paper, session) pair:
-    assign room: capacity >= number of candidates sitting that paper, room not already used that session
-    assign invigilator: teacher free that session, not teaching that subject (avoid conflict of interest, configurable), 
-                         fairly rotate invigilation load across the staff list (track running total per teacher)
+apps/api/src/
+  db.ts                     postgres.js client
+  supabase.ts               service-role client
+  middleware/auth.ts        verify JWT, load school + role
+  middleware/requireRole.ts
+  middleware/errors.ts      zod → 400, 23505 → 409, 23503 → 409
+  routes/tt/index.ts
+  routes/tt/setup.routes.ts days, periods, subjects, teachers, classes, rooms, unavailability
+  schemas/tt.schemas.ts     zod schemas
 ```
 
-### 5.4 Output
-Persist to `exam_placements`. PDF export follows the same rendering pipeline as class/teacher timetables (Section 6) but with exam-specific columns: Date, Session Time, Subject, Grade, Room, Invigilator.
+### Key code
 
----
-
-## 6. PDF Generation (matching the aSc-style printed grid)
-
-### 6.1 Shared data shape
-
-Both class and teacher views pivot the **same** `timetable_entries` table — no separate generation logic needed:
-
+`db.ts`
 ```ts
-type GridCell = {
-  subject_code: string;
-  teacher_initials?: string;   // shown on class view
-  class_name?: string;         // shown on teacher view
-  room_code: string;
-  split?: {                    // present when parallel_group_id links >1 card in this slot
-    group_label: string;       // "Group 1", "Boys"
-    subject_code: string;
-    teacher_initials: string;
-    room_code: string;
-  }[];
-};
-
-type TimetableGrid = {
-  title: string;                       // "5.A" or teacher full name
-  days: string[];                      // ["Mo","Tu","We","Th","Fr"]
-  periods: { index: number; time_range: string }[];
-  cells: Record<string, GridCell>;     // key = `${day}-${period_index}`
-  generated_date: string;
-  footer_label: string;                // "aSc Timetables" equivalent branding
-};
+import postgres from 'postgres';
+export const sql = postgres(process.env.DATABASE_URL!, { max: 10, prepare: false });
 ```
 
-- **Class view query:** `WHERE lesson_requirements.class_id = :classId`, group by day/period, and if two entries share the same `(day, period)` via `parallel_group_id`, nest them into `cell.split[]` (reproduces the dashed-line stacked cell for Sport/PE in your reference image).
-- **Teacher view query:** `WHERE lesson_requirements.teacher_id = :teacherId`, same pivot, but `class_name` is shown instead of `teacher_initials` in each cell.
-
-### 6.2 Rendering approach
-
-Use **Puppeteer** (Express backend) to render an HTML/CSS table matching the exact printed layout, then export via `page.pdf()`:
-
-```
-Row 0: Period headers (index + time range), styled small, top-aligned
-Column 0: Day labels ("Mo","Tu","We","Th","Fr"), large bold serif font — matches image
-Cell: subject_code large + teacher_initials small colored (subjects.color_hex) + room_code bottom-right small
-Split cell: two sub-rows separated by a horizontal dashed border, each with its own group_label, subject, teacher, room
-Header: class/teacher name centered, large
-Footer: "Timetable generated: <date>" bottom-left, product/school branding bottom-right
-```
-
-Alternative if you want to avoid a headless-browser dependency: `@react-pdf/renderer`, laying out a `<Grid>` of `<View>` cells — more setup work for split cells but avoids Puppeteer's memory footprint on the server.
-
-### 6.3 Export endpoint behavior
-- Render once, cache the PDF (S3/Cloudinary), store the URL on `timetable_shares.pdf_url`.
-- Re-render only when the underlying `timetable_entries` change (new version) or a manual "regenerate PDF" action is triggered — don't regenerate on every download request.
-
----
-
-## 7. API Design (Express)
-
-```
-POST   /api/terms/:termId/lesson-requirements        # bulk-create requirements (teacher, subject, class, periods/week, parallel links)
-GET    /api/terms/:termId/lesson-requirements         # list/validate before generation
-
-POST   /api/terms/:termId/timetables/generate          # kicks off generation (async job)
-GET    /api/timetables/:id/status                      # poll: draft|generating|failed|published
-GET    /api/timetables/:id/failures                    # structured list of unplaceable lessons (Section 4.7)
-
-GET    /api/timetables/:id/grid?scope=class&id=:classId    # returns TimetableGrid JSON
-GET    /api/timetables/:id/grid?scope=teacher&id=:teacherId
-
-GET    /api/timetables/:id/pdf?scope=class&id=:classId     # streams/returns cached PDF URL
-GET    /api/timetables/:id/pdf?scope=teacher&id=:teacherId
-
-POST   /api/timetables/:id/publish                     # marks status=published, generates+caches all PDFs
-POST   /api/timetables/:id/share                        # { scope_type, scope_id, via: 'email'|'sms' } -> creates timetable_shares row, dispatches
-
-PATCH  /api/timetables/:id/entries/:entryId             # manual drag-and-drop override (re-validates H1-H9 before saving)
-
-POST   /api/terms/:termId/exams                         # create exam + papers
-POST   /api/exams/:examId/generate                       # runs Section 5 algorithm
-GET    /api/exams/:examId/pdf?scope=grade&id=:gradeId
+`middleware/auth.ts`
+```ts
+export async function auth(req, res, next) {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ error: 'Not signed in' });
+  const { data, error } = await supabase.auth.getUser(token);
+  if (error || !data.user) return res.status(401).json({ error: 'Invalid session' });
+  const [member] = await sql`
+    select school_id, role from school_members where user_id = ${data.user.id} limit 1`;
+  if (!member) return res.status(403).json({ error: 'No school access' });
+  req.user = { id: data.user.id, schoolId: member.school_id, role: member.role };
+  next();
+}
 ```
 
-Generation should run as a **background job** (e.g. BullMQ + Redis, or a simple async worker) since a full-school timetable with backtracking can take several seconds to tens of seconds — never block the HTTP request thread.
+`middleware/errors.ts`
+```ts
+export function errorHandler(err, _req, res, _next) {
+  if (err instanceof ZodError) return res.status(400).json({ error: 'Invalid input', details: err.flatten() });
+  if (err.code === '23505') return res.status(409).json({ error: 'Clash or duplicate', detail: err.detail });
+  if (err.code === '23503') return res.status(409).json({ error: 'Record is in use' });
+  console.error(err);
+  res.status(500).json({ error: 'Server error' });
+}
+```
+
+### Tasks
+- [ ] Auth + role middleware; every query is scoped by `req.user.schoolId`, never by a client-sent school id.
+- [ ] Generic CRUD for the six setup resources (list, create, update, delete) with zod validation.
+- [ ] `PUT /api/tt/unavailability/:type/:id`: delete then insert in one transaction.
+- [ ] `GET/PUT /api/tt/settings`.
+- [ ] Supertest tests: 401 without token, 403 for a student, CRUD happy path, 409 on duplicate short name.
+
+### Done when
+All setup endpoints work from Postman/Bruno against the seeded school.
 
 ---
 
-## 8. Manual Editing & Substitutions
+## Phase 3 — Setup Screens (4 days)
 
-- After generation, admins need drag-and-drop editing on the grid. Every manual move must re-run the **hard constraint check (H1–H9)** for just that entry before saving — reject with a clear message if it breaks something ("Teacher Ma is already teaching 5.B at this time").
-- Day-to-day teacher absences use the separate `substitutions` table — these do NOT alter `timetable_entries` (the master timetable stays intact); they're an overlay looked up by date when rendering "today's timetable" or sending daily notifications.
+### Files
+```
+apps/web/
+  lib/api.ts                      fetch wrapper adding the Supabase access token
+  lib/queries/tt.ts               TanStack Query hooks (useSubjects, useTeachers...)
+  app/(admin)/timetable/layout.tsx
+  app/(admin)/timetable/setup/page.tsx            tabs
+  components/timetable/setup/BellScheduleEditor.tsx
+  components/timetable/setup/ResourceTable.tsx     reusable table + inline edit
+  components/timetable/setup/AvailabilityGrid.tsx  days × periods, click/drag to toggle
+```
 
----
+### Tasks
+- [ ] `lib/api.ts`: get the session from `supabase.auth.getSession()` and send `Authorization: Bearer`.
+- [ ] Bell schedule editor: add periods, set times, and insert a "break" marker between periods (which sets `block`). Show a preview of the school day.
+- [ ] One reusable `ResourceTable` for subjects, teachers, classes and rooms (columns passed as config). Subjects get a colour picker.
+- [ ] `AvailabilityGrid`: click or drag across cells to mark unavailable (grey). Used from the teacher, class and room rows.
+- [ ] Guard the whole `/timetable` section with a server-side role check in `layout.tsx`.
 
-## 9. Sharing & Notifications
-
-1. On `publish`, generate PDFs for every class and every teacher (loop scope, cache each).
-2. `timetable_shares` records who received what and how — supports resend/audit.
-3. Delivery channels:
-   - **Email** (existing notification infra)
-   - **SMS** via Africa's Talking (practical for Kenyan parents without reliable email/data)
-   - **In-portal** — student/parent/teacher dashboard shows current published timetable + PDF download link, no push needed
-4. Versioning: publishing a new version does not delete the old one (`timetables.version` increments) — old shares remain valid until explicitly archived, giving you an audit trail and rollback safety.
-
----
-
-## 10. Validation Before Generation (pre-flight checks)
-
-Run these checks and surface warnings **before** attempting generation — catches infeasibility early instead of wasting solver time:
-
-- `SUM(periods_per_week)` per teacher `<=` teacher's `max_periods_per_week`
-- `SUM(periods_per_week)` per class `<=` total available (non-break) periods per week
-- Every `subject.requires_room_type` has at least one matching room with sufficient capacity
-- Every `parallel_group_id` group has members with non-overlapping student sets (a student can't be required in two parallel groups at once)
-- No teacher is double-assigned to overlapping `lesson_requirements` at the data-entry level
+### Done when
+An admin can set up a school from scratch in the UI without touching SQL.
 
 ---
 
-## 11. Suggested Build Order
+## Phase 4 — Lessons (4 days)
 
-1. Schema migration (Section 2) + seed data for one grade/class to test against
-2. Lesson requirement CRUD (admin UI to define subjects/teachers/periods-per-week/splits)
-3. Pre-flight validation (Section 10)
-4. Core generator: hard constraints + greedy placement + backtracking (Section 4.1–4.3) — get a *valid* (if ugly) timetable first
-5. Local search optimization pass (Section 4.4) — polish quality
-6. Grid query endpoints (Section 6.1) + JSON rendering in the frontend (build the UI grid before PDF)
-7. PDF export via Puppeteer (Section 6.2)
-8. Publish/share workflow (Section 9)
-9. Exam module (Section 5) — reuses rooms/teachers/PDF pipeline, independent algorithm
-10. Manual editing + substitutions (Section 8) — last, since it depends on a stable generated timetable to edit
+### Tasks
+- [ ] API (`routes/tt/timetables.routes.ts`, `lessons.routes.ts`):
+  - `GET/POST /timetables`, with `copyFromId` duplicating lessons, groups and lesson links in one transaction.
+  - `GET/POST/PATCH/DELETE` lessons, writing `tt_lessons`, `tt_lesson_classes` and `tt_lesson_teachers` together.
+  - `POST /timetables/:id/parallel-groups`, and attaching/detaching lessons to a group.
+  - `GET /timetables/:id/teacher-loads` returns `{ teacherId, assigned, available }`.
+- [ ] UI `app/(admin)/timetable/[id]/lessons/page.tsx`:
+  - **List view:** a filterable table (by class, teacher, subject).
+  - **Matrix view** (`LessonMatrix.tsx`): rows are classes of one level, columns are subjects; each cell has periods/week, doubles and a teacher select. Includes an "Apply to all streams of this level" button.
+  - **Teacher load sidebar:** turns red when assigned exceeds available.
+  - Option block builder: pick a level, then add the elective lessons that run together.
+- [ ] Excel import (`POST /import`) with a downloadable template (`exceljs`), covering teachers, classes, subjects and lessons. Validate all rows first, then insert in one transaction, and return row-level errors.
+
+### Done when
+The full demo school's lessons can be entered via the matrix in under 15 minutes, and teacher loads are visible.
 
 ---
 
-## 12. Performance Notes
+## Phase 5 — `timetable-core`: Model & Validator (4 days)
 
-- A mid-size Kenyan secondary school (~20 classes × ~10 subjects × ~5 periods/week ≈ 1,000 placement units) should generate in single-digit seconds with the greedy+backtrack approach — no need for heavier metaheuristics initially.
-- If generation time becomes a bottleneck at scale, the next upgrade path is a proper CSP library (e.g. `google-ortools` CP-SAT solver, which has Node bindings) rather than hand-rolled backtracking — worth flagging as a v2 option, not needed for v1.
+This phase is the foundation for everything after it, so test it thoroughly.
+
+### Files
+```
+packages/timetable-core/src/
+  types.ts        SchoolConfig, Card, Entry, State, Reason
+  slots.ts        slotIndex(), dayOf(), periodOf(), sameBlock(), slotMask()
+  load.ts         buildModel(dbRows) → { config, cards, lockedEntries }
+  state.ts        createState(), commit(), undo(), clone()
+  validate.ts     canPlace(), findRoom(), explain()
+  score.ts        softScore(state, config)
+  index.ts
+  __tests__/
+```
+
+### Key code
+
+`slots.ts`
+```ts
+export const slotIndex = (day: number, period: number, ppd: number) => day * ppd + period;
+export const slotMask = (slot: number, length: 1 | 2): bigint =>
+  length === 1 ? 1n << BigInt(slot) : (3n << BigInt(slot));
+export function sameBlock(cfg: SchoolConfig, slot: number): boolean {
+  const p = slot % cfg.periodsPerDay;
+  return p + 1 < cfg.periodsPerDay && cfg.blockOf[p] === cfg.blockOf[p + 1];
+}
+```
+
+`load.ts` card expansion:
+```ts
+// 5 periods, 1 double → lengths [2,1,1,1]
+function expandLesson(l: Lesson): Card[] {
+  const singles = l.periodsPerWeek - 2 * l.doublesPerWeek;
+  const lengths = [...Array(l.doublesPerWeek).fill(2), ...Array(singles).fill(1)];
+  return lengths.map((len, i) => ({ id: `${l.id}#${i}`, lessonIds: [l.id], length: len, ... }));
+}
+// Parallel group: zip the cards of each member lesson by index into one combined card.
+// Validation: all lessons in a group must have the same periods/doubles pattern.
+```
+
+`state.ts` holds the busy masks per teacher, class and room, plus an `unavailable` mask per resource precomputed from `tt_unavailability`.
+
+### Tests (Vitest)
+- [ ] Slot math, including the last period of a day (a double must not wrap to the next day).
+- [ ] A double across a break is rejected.
+- [ ] Teacher, class and room clashes are rejected, each with the correct reason text.
+- [ ] Unavailability is respected.
+- [ ] A parallel group occupies the class once, all teachers, and one room each.
+- [ ] Combined classes (two classes, one lesson) block both classes.
+- [ ] `commit` followed by `undo` restores the exact previous state.
+
+### Done when
+More than 95% line coverage on `validate.ts` and `state.ts`, and all tests pass.
+
+---
+
+## Phase 6 — Saving Entries & Grid Views (4 days)
+
+### Tasks
+- [ ] Service `apps/api/src/services/tt/entries.service.ts`, used by every write path (editor, generator, publish):
+  ```ts
+  export async function placeEntry(tx, timetableId, card, day, period, roomIds, locked = false) {
+    const [entry] = await tx`
+      insert into tt_entries (timetable_id, lesson_id, day_index, period_index, length, room_id, locked)
+      values (...) returning id`;
+    const rows = occupancyRows(entry.id, card, day, period, roomIds); // teachers, classes (group_key), rooms × length
+    await tx`insert into tt_occupancy ${tx(rows)} on conflict do nothing`; // see note
+    return entry;
+  }
+  ```
+  **Note:** use `on conflict do nothing` **only** for class rows of parallel groups (the shared `group_key`). Teacher and room rows must use a plain insert so a clash raises `23505`. Split them into two inserts.
+- [ ] Read endpoint `GET /timetables/:id/grid?view=class|teacher|room&id=...` returns entries with joined subject, teacher, class and room short names and colour.
+- [ ] Master endpoint `GET /timetables/:id/master`.
+- [ ] UI components:
+  ```
+  components/timetable/grid/TimetableGrid.tsx   days × periods, breaks as thin separators
+  components/timetable/grid/LessonCard.tsx       colour, subject, teacher/class short names, 🔒
+  components/timetable/grid/MasterGrid.tsx       classes × all slots, compact
+  ```
+  Doubles render as one card spanning 2 columns (CSS grid `col-span-2`).
+- [ ] View switcher: Class / Teacher / Room / Master, with a selector for which class, teacher or room.
+
+### Done when
+Entries inserted via SQL render correctly in all four views, and a deliberately clashing insert through the service returns 409.
+
+---
+
+## Phase 7 — Manual Editor (6 days)
+
+This is the most important user-facing screen. Most of the aSc "feel" comes from it.
+
+### Tasks
+- [ ] API (`routes/tt/entries.routes.ts`):
+  - `POST /entries/move`: in a transaction, load the model, delete the old entry and its occupancy, run `canPlace` (server-side), insert the new entry. Return `{ ok, entry }` or 409 with `reasons[]`.
+  - `POST /entries/swap`: remove both, check A at B's position and B at A's, insert both, else roll back.
+  - `POST /entries/place` from the unplaced tray; `DELETE /entries/:id` to unplace; `PATCH /entries/:id` to lock or unlock.
+  - `GET /timetables/:id/model` returns everything the browser needs to build a `State` (config, cards, entries) in one call.
+- [ ] Editor store `apps/web/stores/editorStore.ts` (Zustand): holds the `State` built with `timetable-core`, and applies moves locally.
+- [ ] `app/(admin)/timetable/[id]/editor/page.tsx`:
+  - Left: `UnplacedTray.tsx` (cards not yet placed = all cards minus placed).
+  - Centre: `TimetableGrid` in edit mode with `@dnd-kit` draggable cards and droppable cells.
+  - **On drag start:** compute `canPlace` for every slot and tint cells green, amber (soft-rule hit) or red.
+  - **Hover a red cell:** tooltip with the reasons.
+  - **Drop on an occupied cell:** a "Swap?" popover appears if both directions are valid.
+  - **Right-click menu:** Lock/Unlock, Unplace, Change room, Open teacher view.
+  - **Optimistic update:** apply locally, call the API, revert and toast the reasons on 409.
+- [ ] Undo/redo (keep the last 20 actions in the store; undo calls the inverse API action).
+- [ ] Keyboard: `L` to lock, `Delete` to unplace, `Ctrl+Z` to undo.
+
+### Done when
+A user can build the demo timetable entirely by hand, it's impossible to create a clash from the UI **or** with a hand-crafted API call, and each red cell explains why.
+
+> **Milestone (end of about week 5):** the module is usable in a real school with manual timetabling only.
+
+---
+
+## Phase 8 — Feasibility Check (2 days)
+
+### Tasks
+- [ ] `timetable-core/src/feasibility.ts` → `checkFeasibility(model): Check[]` where `Check = { level: 'ok'|'warn'|'error', message, link? }`. Implement the checks in section 5 of the design guide.
+- [ ] Also check: lessons with no teacher or no class, parallel groups with mismatched period patterns, and subjects needing a room type with no such room.
+- [ ] `GET /timetables/:id/feasibility`.
+- [ ] UI on `/timetable/[id]/generate`: a checklist where each error links to the record to fix. The Generate button is disabled while there are errors.
+
+### Done when
+Seeded "broken" fixtures (overloaded teacher, no lab, impossible double) each produce the correct error.
+
+---
+
+## Phase 9 — Generator (7–8 days)
+
+### Files
+```
+packages/timetable-core/src/generator/
+  order.ts        MRV + tie-breakers
+  search.ts       backtracking with forward checking, step limit
+  generate.ts     restarts, time budget, best-partial tracking, progress callback
+  improve.ts      (Phase 10)
+  reasons.ts      (Phase 10)
+apps/api/src/
+  jobs/queue.ts            pg-boss setup
+  jobs/generate.job.ts     loads model, runs worker thread, saves result
+  workers/generate.worker.ts   runs generate() off the main thread
+  routes/tt/generate.routes.ts
+```
+
+### Key code
+
+`generate.ts` (outline)
+```ts
+export function generate(model: Model, opts: { timeLimitMs: number; seed?: number; onProgress?: (p: Progress) => void }): GenResult {
+  const deadline = Date.now() + opts.timeLimitMs;
+  let best: GenResult | null = null;
+  let attempt = 0;
+  while (Date.now() < deadline) {
+    const rng = mulberry32((opts.seed ?? Date.now()) + attempt++);
+    const state = createState(model);                     // locked entries pre-applied
+    const result = search(model, state, { rng, stepLimit: 20_000, deadline, onProgress: opts.onProgress });
+    if (!best || result.placed > best.placed) best = result;
+    if (result.placed === model.cards.length) break;      // full solution found
+  }
+  return best!;
+}
+```
+
+`search.ts`: iterative (not recursive) backtracking with an explicit stack, to avoid stack overflow on 900+ cards. At each step:
+1. Pick the unplaced card with the smallest live domain (MRV).
+2. Order its candidate slots by `softDelta` + small `rng` jitter.
+3. Commit the first valid one and forward-check that no remaining card has an empty domain; otherwise try the next slot.
+4. If none work, pop and backtrack.
+5. If the step limit is hit, return the current best partial.
+
+`generate.job.ts`
+```ts
+boss.work('tt-generate', async ([job]) => {
+  const { timetableId, jobRowId, keepLocked, timeLimitSec } = job.data;
+  await sql`update tt_jobs set status='running' where id=${jobRowId}`;
+  const model = await loadModel(timetableId, { keepLocked });
+  const result = await runInWorker(model, timeLimitSec * 1000, async (p) => {
+    await sql`update tt_jobs set progress=${p.percent}, placed=${p.placed}, total=${p.total} where id=${jobRowId}`;
+  });                                            // throttle progress writes to ~1/sec
+  await sql.begin(async (tx) => {
+    await deleteUnlockedEntries(tx, timetableId);
+    for (const e of result.entries) await placeEntry(tx, timetableId, ...);
+  });
+  await sql`update tt_jobs set status='done', progress=100, result=${sql.json(result.summary)}, finished_at=now() where id=${jobRowId}`;
+});
+```
+Use bulk inserts for entries and occupancy rather than one insert per entry; with 900+ cards this matters.
+
+### Tasks
+- [ ] Implement `order.ts`, `search.ts`, `generate.ts` with a seeded RNG so runs are reproducible.
+- [ ] Worker thread wrapper (`worker_threads`) passing the model in and progress messages out.
+- [ ] pg-boss queue and job; `POST /generate` creates a `tt_jobs` row and enqueues; `POST /jobs/:id/cancel` sets a flag the worker checks.
+- [ ] Prevent two concurrent generation jobs for the same timetable.
+- [ ] UI: the Generate button opens a progress panel subscribed to the `tt_jobs` row via Supabase Realtime (`supabase.channel().on('postgres_changes', { table: 'tt_jobs', filter: 'id=eq.<id>' })`). On done, link to the editor.
+- [ ] Tests:
+  - **Property test:** 50 random feasible schools; assert no clashes and exact period counts.
+  - Locked entries are untouched after generation.
+  - The demo school solves fully in under 60 s on the target server.
+
+### Done when
+The demo school generates a complete, clash-free timetable from the UI with live progress, and partial results are saved when a school is infeasible.
+
+---
+
+## Phase 10 — Quality Pass & Unplaced Reasons (3–4 days)
+
+### Tasks
+- [ ] `score.ts`: implement the soft rules from the design guide, each togglable from `tt_settings.rules`.
+- [ ] `improve.ts`: hill climbing after a full placement. Pick a random non-locked card and try a move or swap; accept if valid and the score improves. Stop after a time budget (about 10 s) or N iterations without improvement.
+- [ ] `reasons.ts`: for each unplaced card, aggregate the failure reasons across all slots into the top 1–2 human-readable causes ("OTI is busy or unavailable in all 7 remaining slots that 3E is free").
+- [ ] UI: unplaced report on the generate page with a "Show in editor" link for each card.
+- [ ] Settings page: rule toggles plus "Ignore general rooms".
+
+### Done when
+In the demo output, no class has the same subject twice in a day (except doubles), teacher gaps visibly drop compared with Phase 9, and every unplaced card has a reason a non-technical user understands.
+
+---
+
+## Phase 11 — Publish, My Timetable, Exports (4 days)
+
+### Tasks
+- [ ] `POST /timetables/:id/publish`: block if unplaced cards exist (unless `force`); archive the previously published timetable for that term in the same transaction.
+- [ ] `GET /published/me`: resolve the user to a teacher (via `staff_id`) or a student (via their class) and return the right grid.
+- [ ] `app/(portal)/my-timetable/page.tsx`: read-only grid that highlights the current period and "next lesson".
+- [ ] Dashboard widget: "Today's lessons" for teachers and students.
+- [ ] Print route `/timetable/[id]/print?view=class|teacher|room|master&ids=...` using Tailwind `print:` styles, one timetable per page (`break-after-page`), master sheet in A3 landscape (`@page { size: A3 landscape }`).
+- [ ] Excel export with `exceljs` (one sheet per class, a teacher sheet, and the master).
+- [ ] Optional server PDF: Puppeteer in Express rendering the print route. Skip it if browser printing is good enough.
+
+### Done when
+Publishing makes the timetable appear for a test teacher and a test student, and printed class timetables fit cleanly on A4.
+
+---
+
+## Phase 12 — Substitutions Lite (3 days)
+
+### Tasks
+- [ ] `POST /substitutions/absence { teacherId, date }`: create `tt_substitutions` rows for every entry of that teacher on that weekday in the published timetable.
+- [ ] `GET /substitutions?date=`: for each affected lesson, list free teachers in that slot, ranked by (a) teaches the same subject, (b) fewest lessons that day, (c) fewest covers this week.
+- [ ] `POST /substitutions/:id/assign`.
+- [ ] UI `/timetable/substitutions`: date picker, absent-teacher multi-select, a table of affected lessons with a cover dropdown, and a printable daily cover sheet.
+- [ ] Show cover duties on the covering teacher's dashboard.
+
+### Done when
+Marking one teacher absent produces correct suggestions, and the assigned cover appears on the covering teacher's dashboard.
+
+---
+
+## Phase 13 — Hardening & Launch (4–5 days)
+
+### Tasks
+- [ ] **Security review:** every route scoped by `schoolId`; RLS tested with anon, student, teacher and timetabler JWTs; service-role key never sent to the browser.
+- [ ] **Concurrency:** use a timetable-level advisory lock (`pg_advisory_xact_lock(hashtext(timetable_id))`) on every write, so an editor save and a generation job can't interleave. While a generation job runs, the editor shows read-only mode.
+- [ ] **Performance:** a large fixture (30 streams, 70 teachers, 1,200 cards) generates within budget; grid endpoints respond in under 300 ms.
+- [ ] **Audit log:** a `tt_audit` table recording who moved, locked or published what and when.
+- [ ] **Backups:** a "Duplicate timetable" button before big changes (reuses the `copyFromId` logic, including entries).
+- [ ] **E2E tests** (Playwright): set up → lessons → generate → edit → publish → teacher sees timetable.
+- [ ] **Deploy:** Next.js on Vercel; Express plus the pg-boss worker on a long-running host; migrations via `npx supabase db push` in CI.
+- [ ] **User guide:** a one-page "How to make your timetable" with screenshots, aimed at deputy principals.
+
+### Done when
+A pilot school completes its real term timetable end to end without developer help.
+
+---
+
+## Timeline Summary
+
+| Week | Phases | Outcome |
+|---|---|---|
+| 1 | 0, 1, start 2 | Repo, schema, RLS, seed |
+| 2 | 2, 3 | Setup API and screens |
+| 3 | 4, 5 | Lessons entry; validator with tests |
+| 4 | 6, start 7 | Saving and grid views |
+| 5 | 7 | **Manual editor: first usable release** |
+| 6 | 8, start 9 | Feasibility check; generator core |
+| 7 | 9 | Generator with jobs and live progress |
+| 8 | 10, 11 | Quality pass; publish, my timetable, exports |
+| 9 | 12, 13 | Substitutions; hardening |
+| 10 | 13 | Pilot school, fixes, launch |
+
+---
+
+## Risks & Mitigations
+
+| Risk | Mitigation |
+|---|---|
+| Option blocks modelled wrongly, breaking clash logic | Build and test them in Phases 1 and 5, not at the end; include them in seed data from day one |
+| Generator hangs or fails on real data | Feasibility check first, a step limit with restarts, always save the best partial, and clear unplaced reasons |
+| Bad data from schools (overloaded teachers, too many periods) | Teacher load sidebar during lesson entry; feasibility errors link straight to the fix |
+| Express host times out long jobs | Run the generator via pg-boss on a long-running host, never on serverless |
+| Editor and generator writing at the same time | Advisory lock per timetable; editor goes read-only during a job |
+| Validator differs between browser and server | One shared `timetable-core` package; server always re-validates |
+| Scope creep (exams, A/B weeks, room booking) | Keep the "Out of scope" list in the design guide; add only after v1 is in a school |

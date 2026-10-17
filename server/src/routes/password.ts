@@ -1,10 +1,9 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth';
-import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcrypt';
+import { prisma } from '../lib/prisma';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 // POST /api/auth/change-password
 router.post('/change-password', requireAuth, async (req: any, res) => {

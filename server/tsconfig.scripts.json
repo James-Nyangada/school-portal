@@ -1,0 +1,11 @@
+{
+  // For one-off scripts outside src/ (e.g. prisma/seed-timetable-demo.ts) run with ts-node.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "declaration": false,
+    "declarationMap": false,
+    "types": ["node"]
+  },
+  "include": ["prisma/*.ts", "scripts/*.ts", "src/**/*.ts"]
+}

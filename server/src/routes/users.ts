@@ -1,10 +1,10 @@
 import { Router } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
-import { PrismaClient, Role, Status } from '@prisma/client';
+import { Role, Status } from '@prisma/client';
 import bcrypt from 'bcrypt';
+import { prisma } from '../lib/prisma';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 // Helper to check if a user can create a specific role
 function canCreateRole(creatorRole: string, targetRole: string): boolean {
@@ -15,6 +15,22 @@ function canCreateRole(creatorRole: string, targetRole: string): boolean {
     return ['TEACHER', 'FINANCE', 'STUDENT', 'PARENT'].includes(targetRole);
   }
   return false;
+}
+
+export const MAX_TEACHER_SUBJECTS = 2;
+
+/** Validates a teacher's subject list; returns the cleaned ids or an error message. */
+async function parseTeacherSubjects(raw: unknown): Promise<string[] | string> {
+  if (raw == null) return [];
+  if (!Array.isArray(raw) || raw.some((x) => typeof x !== 'string')) return 'subjectIds must be a list of subject ids';
+
+  const ids = [...new Set(raw as string[])];
+  if (ids.length > MAX_TEACHER_SUBJECTS) return `A teacher can teach at most ${MAX_TEACHER_SUBJECTS} subjects`;
+
+  const found = await prisma.subject.count({ where: { id: { in: ids } } });
+  if (found !== ids.length) return 'One or more subjects do not exist';
+
+  return ids;
 }
 
 // GET /api/users
@@ -56,7 +72,7 @@ router.get('/', requireAuth, requireRole('ADMIN'), async (req, res) => {
           parentLinks: {
             include: {
               student: {
-                select: { id: true, firstName: true, lastName: true, email: true, phone: true, admissionNumber: true }
+                select: { id: true, firstName: true, lastName: true, email: true, phone: true, admissionNumber: true, class: { select: { id: true, name: true } } }
               }
             }
           },
@@ -64,6 +80,9 @@ router.get('/', requireAuth, requireRole('ADMIN'), async (req, res) => {
             include: {
               subject: true
             }
+          },
+          teachesSubjects: {
+            select: { subjectId: true, subject: { select: { id: true, name: true, code: true } } }
           }
         },
         orderBy: { createdAt: 'desc' }
@@ -99,7 +118,7 @@ router.get('/me', requireAuth, async (req: any, res) => {
         parentLinks: {
           include: {
             student: {
-              select: { id: true, firstName: true, lastName: true, email: true, phone: true, admissionNumber: true }
+              select: { id: true, firstName: true, lastName: true, email: true, phone: true, admissionNumber: true, class: { select: { id: true, name: true } } }
             }
           }
         }
@@ -134,7 +153,7 @@ router.get('/:id', requireAuth, requireRole('ADMIN'), async (req, res) => {
         parentLinks: {
           include: {
             student: {
-              select: { id: true, firstName: true, lastName: true, email: true, phone: true, admissionNumber: true }
+              select: { id: true, firstName: true, lastName: true, email: true, phone: true, admissionNumber: true, class: { select: { id: true, name: true } } }
             }
           }
         },
@@ -159,13 +178,16 @@ router.get('/:id', requireAuth, requireRole('ADMIN'), async (req, res) => {
 router.post('/', requireAuth, requireRole('ADMIN'), async (req: any, res) => {
   try {
     const { role, firstName, lastName, email, phone, customTempPassword } = req.body;
-    
+
     console.log('[DEBUG] User creating account - req.user:', req.user, 'targetRole:', role);
 
     if (!canCreateRole(req.user.role, role)) {
       console.log('[DEBUG] canCreateRole check failed for:', req.user.role, '->', role);
       return res.status(403).json({ error: 'Forbidden to create this role' });
     }
+
+    const subjectIds = role === 'TEACHER' ? await parseTeacherSubjects(req.body.subjectIds) : [];
+    if (typeof subjectIds === 'string') return res.status(400).json({ error: subjectIds });
 
     const tempPassword = customTempPassword || Math.random().toString(36).slice(-8);
     const passwordHash = await bcrypt.hash(tempPassword, 10);
@@ -179,7 +201,8 @@ router.post('/', requireAuth, requireRole('ADMIN'), async (req: any, res) => {
         phone: phone || null,
         passwordHash,
         status: Status.PENDING_ACTIVATION,
-        createdById: req.user.id
+        createdById: req.user.id,
+        teachesSubjects: { create: subjectIds.map((subjectId) => ({ subjectId })) }
       }
     });
 
@@ -257,6 +280,39 @@ router.patch('/:id', requireAuth, requireRole('ADMIN'), async (req: any, res) =>
           action: 'REACTIVATE_USER',
           targetId,
           details: `Reactivated user.`
+        }
+      });
+    } else if (action === 'EDIT_DETAILS') {
+      const target = await prisma.user.findUnique({ where: { id: targetId }, select: { role: true } });
+      if (!target) return res.status(404).json({ error: 'User not found' });
+
+      const { firstName, lastName, email, phone } = req.body;
+      const subjectIds = target.role === 'TEACHER' ? await parseTeacherSubjects(req.body.subjectIds) : null;
+      if (typeof subjectIds === 'string') return res.status(400).json({ error: subjectIds });
+
+      try {
+        await prisma.$transaction(async (tx) => {
+          await tx.user.update({
+            where: { id: targetId },
+            data: { firstName, lastName, email: email || null, phone: phone || null }
+          });
+
+          if (subjectIds) {
+            await tx.teacherSubject.deleteMany({ where: { teacherId: targetId } });
+            await tx.teacherSubject.createMany({ data: subjectIds.map((subjectId) => ({ teacherId: targetId, subjectId })) });
+          }
+        });
+      } catch (e: any) {
+        if (e?.code === 'P2002') return res.status(409).json({ error: 'That email or phone is already used by another account' });
+        throw e;
+      }
+
+      await prisma.auditLog.create({
+        data: {
+          actorId: req.user.id,
+          action: 'EDIT_USER_DETAILS',
+          targetId,
+          details: subjectIds ? `Updated details and subjects (${subjectIds.length})` : 'Updated details'
         }
       });
     } else if (action === 'FORCE_RESET') {

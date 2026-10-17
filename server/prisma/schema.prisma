@@ -39,6 +39,36 @@ enum GradeStatus {
   PENDING_APPROVAL
 }
 
+/// Numeric = CAT + exam marks with a computed total; CBC = competency levels per strand / sub-strand.
+enum GradingMode {
+  NUMERIC
+  CBC
+}
+
+/// CBC competency levels: Exceeding, Meeting, Approaching, Below expectations.
+enum CompetencyLevel {
+  EE
+  ME
+  AE
+  BE
+}
+
+enum AssessmentType {
+  FORMATIVE
+  SUMMATIVE
+}
+
+enum GradeRequestType {
+  EDIT
+  DELETE
+}
+
+enum GradeRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 enum AttendanceStatus {
   PRESENT
   ABSENT
@@ -46,101 +76,203 @@ enum AttendanceStatus {
 }
 
 model User {
-  id              String    @id @default(uuid())
-  email           String?   @unique
-  phone           String?   @unique
-  passwordHash    String
-  role            Role
-  status          Status    @default(ACTIVE)
-  
+  id           String  @id @default(uuid())
+  email        String? @unique
+  phone        String? @unique
+  passwordHash String
+  role         Role
+  status       Status  @default(ACTIVE)
+
   // Specific to students
-  admissionNumber String?   @unique
-  nemisNumber     String?   @unique
+  admissionNumber     String? @unique
+  nemisNumber         String? @unique
   birthCertificateUrl String?
   reportCardUrl       String?
   passportPhotoUrl    String?
-  
+
   // Common fields
-  firstName       String?
-  lastName        String?
-  
+  firstName String?
+  lastName  String?
+
   // Phase 4 enrollments
   classId         String?
-  class           Class?    @relation("StudentClass", fields: [classId], references: [id])
-  classTeacherOf  Class?    @relation("ClassTeacher")
+  class           Class?                @relation("StudentClass", fields: [classId], references: [id])
+  classTeacherOf  Class?                @relation("ClassTeacher")
   studentSubjects StudentSubject[]
   teacherSubjects TeacherSubjectClass[]
-  reportCards     ReportCard[] @relation("StudentReportCards")
-  
+  teachesSubjects TeacherSubject[]
+  reportCards     ReportCard[]          @relation("StudentReportCards")
+
   // Parent invite
-  inviteToken     String?   @unique
-  
+  inviteToken String? @unique
+
   // Account locking
-  failedAttempts  Int       @default(0)
-  lockedUntil     DateTime?
-  
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  
+  failedAttempts Int       @default(0)
+  lockedUntil    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Creator relationship
-  createdById     String?
-  createdBy       User?     @relation("CreatedUsers", fields: [createdById], references: [id])
-  createdUsers    User[]    @relation("CreatedUsers")
-  
-  auditActorLogs   AuditLog[]     @relation("AuditActor")
-  auditTargetLogs  AuditLog[]     @relation("AuditTarget")
-  childLinks       StudentParent[] @relation("StudentChildren")
-  parentLinks      StudentParent[] @relation("ParentChildren")
+  createdById  String?
+  createdBy    User?   @relation("CreatedUsers", fields: [createdById], references: [id])
+  createdUsers User[]  @relation("CreatedUsers")
+
+  auditActorLogs  AuditLog[]      @relation("AuditActor")
+  auditTargetLogs AuditLog[]      @relation("AuditTarget")
+  childLinks      StudentParent[] @relation("StudentChildren")
+  parentLinks     StudentParent[] @relation("ParentChildren")
 
   // Phase 2 relationships
-  feeRecords       FeeRecord[]
-  feeTransactions  FeeTransaction[]
-  grades           Grade[]
-  gradeAuditsActor GradeAuditLog[] @relation("GradeAuditActor")
-  gradeAuditsAppr  GradeAuditLog[] @relation("GradeAuditApprover")
+  feeRecords        FeeRecord[]
+  feeTransactions   FeeTransaction[]
+  mpesaRequests     MpesaRequest[]       @relation("StudentMpesaRequests")
+  bankPaymentClaims BankPaymentClaim[]   @relation("StudentBankClaims")
+  grades            Grade[]
+  gradeAuditsActor  GradeAuditLog[]      @relation("GradeAuditActor")
+  gradeAuditsAppr   GradeAuditLog[]      @relation("GradeAuditApprover")
+  gradeRequests     GradeChangeRequest[] @relation("GradeRequestedBy")
+  gradeDecisions    GradeChangeRequest[] @relation("GradeDecidedBy")
   attendanceRecords AttendanceRecord[]
 
   // Phase 3 relationships
-  createdAssignments   Assignment[]            @relation("TeacherAssignments")
-  submissions          AssignmentSubmission[]  @relation("StudentSubmissions")
-  campaignsSent        CommunicationCampaign[] @relation("CampaignsSent")
+  createdAssignments Assignment[]            @relation("TeacherAssignments")
+  submissions        AssignmentSubmission[]  @relation("StudentSubmissions")
+  campaignsSent      CommunicationCampaign[] @relation("CampaignsSent")
+  notifications      Notification[]          @relation("UserNotifications")
+  newslettersSent    Newsletter[]            @relation("NewslettersSent")
+  newsletterInbox    NewsletterRecipient[]
+
+  clearance ClearanceRequest? @relation("StudentClearance")
+
+  // Timetabling
+  ttTeacherInfo TtTeacherInfo?
+  ttLessons     TtLessonTeacher[]
+
+  @@index([role])
+  @@index([classId])
 }
 
 model AuditLog {
-  id          String   @id @default(uuid())
-  actorId     String
-  action      String
-  targetId    String?
-  details     String?
-  ipAddress   String?
-  userAgent   String?
-  createdAt   DateTime @default(now())
-  actor       User     @relation("AuditActor", fields: [actorId], references: [id])
-  target      User?    @relation("AuditTarget", fields: [targetId], references: [id])
+  id        String   @id @default(uuid())
+  actorId   String
+  action    String
+  targetId  String?
+  details   String?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+  actor     User     @relation("AuditActor", fields: [actorId], references: [id])
+  target    User?    @relation("AuditTarget", fields: [targetId], references: [id])
+
+  @@index([createdAt])
+  @@index([actorId])
+  @@index([action, createdAt])
 }
 
 model StudentParent {
-  id           String @id @default(uuid())
+  id           String  @id @default(uuid())
   studentId    String
   parentId     String
   relationship String?
-  student      User   @relation("StudentChildren", fields: [studentId], references: [id])
-  parent       User   @relation("ParentChildren", fields: [parentId], references: [id])
+  student      User    @relation("StudentChildren", fields: [studentId], references: [id])
+  parent       User    @relation("ParentChildren", fields: [parentId], references: [id])
+
   @@unique([studentId, parentId])
+  @@index([parentId])
 }
 
 // Phase 2 Models
 
+/// A student's bill for one term. amountPaid is allocated oldest-term-first, so unpaid balances carry forward.
 model FeeRecord {
-  id          String   @id @default(uuid())
-  studentId   String
-  term        String
-  totalBilled Float
-  amountPaid  Float    @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id             String   @id @default(uuid())
+  studentId      String
+  term           String
+  totalBilled    Float
+  amountPaid     Float    @default(0)
+  /// Structure this bill came from; null for manual bills or payments with no bill yet
+  feeStructureId String?
+  /// Finance set this amount by hand (bursary, adjustment); structure changes leave it alone
+  manualOverride Boolean  @default(false)
+  /// Code of a SchoolSettings.paymentPlans template, chosen at admission; drives the milestone schedule
+  paymentPlan    String   @default("FULL")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  student     User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  student      User          @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  feeStructure FeeStructure? @relation(fields: [feeStructureId], references: [id], onDelete: SetNull)
+
+  @@index([studentId])
+  @@index([studentId, term])
+  @@index([feeStructureId])
+}
+
+/// Itemised term fees for one or more classes. Drafts are freely editable; once published, at most
+/// MAX_FEE_STRUCTURE_REVISIONS changes are allowed because parents may already have paid against it.
+model FeeStructure {
+  id            String    @id @default(uuid())
+  name          String
+  term          String
+  /// DRAFT | PUBLISHED
+  status        String    @default("DRAFT")
+  revisionCount Int       @default(0)
+  notes         String?
+  createdById   String
+  publishedById String?
+  publishedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  items      FeeStructureItem[]
+  classes    FeeStructureClass[]
+  revisions  FeeStructureRevision[]
+  feeRecords FeeRecord[]
+
+  @@index([term, status])
+}
+
+model FeeStructureItem {
+  id          String @id @default(uuid())
+  structureId String
+  name        String
+  amount      Float
+  sortOrder   Int    @default(0)
+
+  structure FeeStructure @relation(fields: [structureId], references: [id], onDelete: Cascade)
+
+  @@index([structureId])
+}
+
+/// A class is billed by at most one structure per term.
+model FeeStructureClass {
+  structureId String
+  classId     String
+  term        String
+
+  structure FeeStructure @relation(fields: [structureId], references: [id], onDelete: Cascade)
+  class     Class        @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@id([structureId, classId])
+  @@unique([classId, term])
+}
+
+/// Audit of a change made after publishing: what the items were, what they became, and why.
+model FeeStructureRevision {
+  id             String   @id @default(uuid())
+  structureId    String
+  revisionNumber Int
+  reason         String
+  previousItems  Json
+  newItems       Json
+  previousTotal  Float
+  newTotal       Float
+  changedById    String
+  createdAt      DateTime @default(now())
+
+  structure FeeStructure @relation(fields: [structureId], references: [id], onDelete: Cascade)
+
+  @@unique([structureId, revisionNumber])
 }
 
 model FeeTransaction {
@@ -153,90 +285,339 @@ model FeeTransaction {
   recordedById  String?
   createdAt     DateTime      @default(now())
 
-  student       User          @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  student User @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([studentId, createdAt])
+}
+
+/// One STK Push prompt; the Daraja callback is matched back to the student by checkoutRequestId.
+model MpesaRequest {
+  id                 String   @id @default(uuid())
+  checkoutRequestId  String   @unique
+  merchantRequestId  String?
+  studentId          String
+  term               String
+  amount             Float
+  phone              String
+  initiatedById      String
+  /// PENDING | SUCCESS | FAILED
+  status             String   @default("PENDING")
+  resultCode         Int?
+  resultDesc         String?
+  mpesaReceiptNumber String?
+  transactionId      String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  student User @relation("StudentMpesaRequests", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([studentId, createdAt])
+  @@index([status])
+}
+
+/// A parent's report of a direct bank deposit; finance verifies the transaction code before it counts as paid.
+/// Paybill payments made from the M-Pesa menu (C2B), reported by Safaricom's confirmation webhook.
+/// Matched to a student by the account number the payer typed (their admission number).
+model MpesaC2BPayment {
+  id            String    @id @default(uuid())
+  /// M-Pesa receipt number, e.g. "SJK3XXXXXX"
+  transId       String    @unique
+  amount        Float
+  /// Account number the payer typed
+  billRef       String
+  shortcode     String?
+  /// Payer's phone (Safaricom sends it hashed on the v2 API)
+  msisdn        String?
+  payerName     String?
+  transTime     DateTime?
+  /// CREDITED | UNMATCHED (account didn't match a student; finance assigns it) | DUPLICATE (already credited by an app prompt)
+  status        String    @default("UNMATCHED")
+  studentId     String?
+  transactionId String?
+  assignedById  String?
+  raw           Json
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([status, createdAt])
+  @@index([studentId])
+}
+
+model BankPaymentClaim {
+  id              String    @id @default(uuid())
+  studentId       String
+  term            String
+  amount          Float
+  transactionCode String
+  bankName        String?
+  paidAt          DateTime
+  note            String?
+  submittedById   String
+  /// PENDING | APPROVED | REJECTED
+  status          String    @default("PENDING")
+  reviewedById    String?
+  reviewedAt      DateTime?
+  rejectionReason String?
+  transactionId   String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  student User @relation("StudentBankClaims", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([studentId])
+  @@index([transactionCode])
 }
 
 model Class {
-  id              String   @id @default(uuid())
-  name            String   @unique
-  level           Int?
-  classTeacherId  String?  @unique
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  
-  classTeacher    User?    @relation("ClassTeacher", fields: [classTeacherId], references: [id])
-  students        User[]   @relation("StudentClass")
+  id             String       @id @default(uuid())
+  name           String       @unique
+  level          Int?
+  classTeacherId String?      @unique
+  /// Overrides SchoolSettings.gradingMode for this class; null = school default.
+  gradingMode    GradingMode?
+  /// Students in this class may start M-Pesa payments themselves (older, independent students); otherwise view-only
+  studentsCanPay Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  classTeacher    User?                 @relation("ClassTeacher", fields: [classTeacherId], references: [id])
+  students        User[]                @relation("StudentClass")
+  feeStructures   FeeStructureClass[]
   subjects        ClassSubject[]
   teacherSubjects TeacherSubjectClass[]
   assignments     Assignment[]
+  newsletters     Newsletter[]
+  ttLessons       TtLessonClass[]
 }
 
 model Subject {
-  id          String   @id @default(uuid())
-  name        String
-  code        String   @unique
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id        String   @id @default(uuid())
+  name      String
+  code      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  grades      Grade[]
-  assignments Assignment[] @relation("SubjectAssignments")
+  grades          Grade[]
+  assignments     Assignment[]          @relation("SubjectAssignments")
   classSubjects   ClassSubject[]
   studentSubjects StudentSubject[]
   teacherSubjects TeacherSubjectClass[]
+  taughtBy        TeacherSubject[]
   reportCardSubj  ReportCardSubject[]
+  ttInfo          TtSubjectInfo?
+  ttLessons       TtLesson[]
 }
 
 model Grade {
-  id              String      @id @default(uuid())
-  studentId       String
-  subjectId       String
-  term            String
-  value           String      // Can be numeric or CBC competency (EE, ME, etc.)
-  status          GradeStatus @default(DRAFT)
-  teacherComment  String?
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
+  id             String      @id @default(uuid())
+  studentId      String
+  subjectId      String
+  term           String
+  mode           GradingMode @default(NUMERIC)
+  /// Display value students see: the computed total for NUMERIC, the competency level for CBC.
+  value          String
+  status         GradeStatus @default(DRAFT)
+  teacherComment String?
 
-  student         User        @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  subject         Subject     @relation(fields: [subjectId], references: [id], onDelete: Cascade)
-  auditLogs       GradeAuditLog[]
+  // NUMERIC: one row per student + subject + term
+  catScores   Float[] @default([])
+  examScore   Float?
+  /// Weighted percentage of the components entered so far (see services/grading)
+  total       Float?
+  letterGrade String?
+
+  // CBC: one row per student + subject + term + strand + sub-strand + assessment type
+  strand          String?
+  subStrand       String?
+  competencyLevel CompetencyLevel?
+  assessmentType  AssessmentType?
+
+  enteredById String?
+  publishedAt DateTime?
+  /// Grades are never hard-deleted; deleted rows keep their history.
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  student        User                 @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  subject        Subject              @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  auditLogs      GradeAuditLog[]
+  changeRequests GradeChangeRequest[]
+
+  @@index([studentId, term])
+  @@index([subjectId, term])
 }
 
+/// Append-only: one row per grade write or state transition. Never updated or deleted.
 model GradeAuditLog {
   id            String   @id @default(uuid())
   gradeId       String
+  /// CREATED, DRAFT_UPDATED, PUBLISHED, EDIT_REQUESTED, DELETE_REQUESTED, EDIT_APPROVED, EDIT_REJECTED,
+  /// DELETE_APPROVED, DELETE_REJECTED, ADMIN_EDITED, DELETED
+  action        String   @default("EDIT_REQUESTED")
   previousValue String?
   newValue      String
   changedById   String
   approvedById  String?
   reason        String?
-  status        String   @default("PENDING") // PENDING, APPROVED, REJECTED
+  status        String   @default("PENDING") // legacy: PENDING, APPROVED, REJECTED
   createdAt     DateTime @default(now())
 
-  grade         Grade    @relation(fields: [gradeId], references: [id], onDelete: Cascade)
-  changedBy     User     @relation("GradeAuditActor", fields: [changedById], references: [id], onDelete: Cascade)
-  approvedBy    User?    @relation("GradeAuditApprover", fields: [approvedById], references: [id], onDelete: Cascade)
+  grade      Grade @relation(fields: [gradeId], references: [id], onDelete: Cascade)
+  changedBy  User  @relation("GradeAuditActor", fields: [changedById], references: [id], onDelete: Cascade)
+  approvedBy User? @relation("GradeAuditApprover", fields: [approvedById], references: [id], onDelete: Cascade)
+
+  @@index([gradeId])
+  @@index([status])
+}
+
+/// A teacher's request to change or delete a published grade; the admin approval queue.
+model GradeChangeRequest {
+  id             String             @id @default(uuid())
+  gradeId        String
+  type           GradeRequestType
+  status         GradeRequestStatus @default(PENDING)
+  /// Snapshot of the editable fields when the request was made, and the proposed fields (null for DELETE)
+  previousData   Json
+  newData        Json?
+  previousValue  String
+  newValue       String?
+  reason         String
+  requestedById  String
+  decidedById    String?
+  decidedAt      DateTime?
+  decisionReason String?
+  createdAt      DateTime           @default(now())
+
+  grade       Grade @relation(fields: [gradeId], references: [id], onDelete: Cascade)
+  requestedBy User  @relation("GradeRequestedBy", fields: [requestedById], references: [id], onDelete: Cascade)
+  decidedBy   User? @relation("GradeDecidedBy", fields: [decidedById], references: [id])
+
+  @@index([status, createdAt])
+  @@index([gradeId])
+}
+
+/// School-wide settings (single row, id = 1).
+model SchoolSettings {
+  id                 Int         @id @default(1)
+  gradingMode        GradingMode @default(NUMERIC)
+  currentTerm        String      @default("Term 1")
+  catCount           Int         @default(2)
+  catMaxScore        Float       @default(30)
+  examMaxScore       Float       @default(100)
+  /// Weights of the CAT average and the exam in the total; they add up to 100.
+  catWeight          Float       @default(30)
+  examWeight         Float       @default(70)
+  /// [{ "grade": "A", "min": 80 }, ...] highest first
+  gradeBoundaries    Json        @default("[{\"grade\":\"A\",\"min\":80},{\"grade\":\"A-\",\"min\":75},{\"grade\":\"B+\",\"min\":70},{\"grade\":\"B\",\"min\":65},{\"grade\":\"B-\",\"min\":60},{\"grade\":\"C+\",\"min\":55},{\"grade\":\"C\",\"min\":50},{\"grade\":\"C-\",\"min\":45},{\"grade\":\"D+\",\"min\":40},{\"grade\":\"D\",\"min\":35},{\"grade\":\"D-\",\"min\":30},{\"grade\":\"E\",\"min\":0}]")
+  /// Grade-edit requests older than this are flagged as overdue
+  approvalSlaHours   Int         @default(48)
+  /// % of fees an ongoing student must clear to see grades and timetable (leavers always need 100%)
+  feeGateThreshold   Float       @default(50)
+  // Feature toggles (System Settings → Feature Toggles); every change is audit-logged
+  mpesaEnabled       Boolean     @default(true)
+  smsEnabled         Boolean     @default(true)
+  newsletterEnabled  Boolean     @default(true)
+  assignmentsEnabled Boolean     @default(true)
+  /// Installment plan templates offered at admission: [{ "code", "name", "milestones": [{ "week", "percent" }] }].
+  /// Week n of a term starts on the term's opening date + (n - 1) weeks; percent is cumulative.
+  paymentPlans       Json        @default("[{\"code\":\"FULL\",\"name\":\"Full term\",\"milestones\":[{\"week\":2,\"percent\":100}]},{\"code\":\"INSTALLMENTS_2\",\"name\":\"Two installments\",\"milestones\":[{\"week\":2,\"percent\":50},{\"week\":7,\"percent\":100}]},{\"code\":\"INSTALLMENTS_3\",\"name\":\"Three installments\",\"milestones\":[{\"week\":2,\"percent\":30},{\"week\":6,\"percent\":65},{\"week\":10,\"percent\":100}]}]")
+  updatedAt          DateTime    @updatedAt
+}
+
+/// The school's public profile (single row, id = 1): what the school website shows, plus term dates.
+/// Edited in School Settings by admins; read without auth from GET /api/public/school.
+model SchoolProfile {
+  id                    Int      @id @default(1)
+  // Identity
+  name                  String   @default("")
+  shortName             String?
+  motto                 String?
+  tagline               String?
+  logoUrl               String?
+  heroImageUrl          String?
+  foundedYear           Int?
+  registrationNumber    String?
+  curriculum            String?
+  schoolType            String?
+  gender                String?
+  levelsOffered         String?
+  // About
+  about                 String?
+  history               String?
+  mission               String?
+  vision                String?
+  /// ["Integrity", "Excellence", ...]
+  coreValues            Json     @default("[]")
+  // Leadership
+  principalName         String?
+  principalTitle        String?
+  principalPhotoUrl     String?
+  principalMessage      String?
+  // Contact
+  email                 String?
+  phone                 String?
+  altPhone              String?
+  whatsapp              String?
+  postalAddress         String?
+  physicalAddress       String?
+  county                String?
+  mapUrl                String?
+  officeHours           String?
+  website               String?
+  /// { "facebook": "...", "instagram": "...", "x": "...", "youtube": "...", "tiktok": "...", "linkedin": "..." }
+  socialLinks           Json     @default("{}")
+  // Website content
+  /// [{ "label": "Students", "value": "800+" }]
+  highlights            Json     @default("[]")
+  /// [{ "name": "Science labs", "description": "..." }]
+  facilities            Json     @default("[]")
+  admissionsOpen        Boolean  @default(false)
+  admissionsInfo        String?
+  /// ["Birth certificate", "Last report card", ...]
+  admissionRequirements Json     @default("[]")
+  // Academic calendar
+  academicYear          String?
+  /// [{ "name": "Term 1", "startDate": "2026-01-05", "endDate": "2026-04-03", "halfTermStart": null, "halfTermEnd": null }]
+  terms                 Json     @default("[]")
+  updatedAt             DateTime @updatedAt
 }
 
 model AttendanceRecord {
-  id        String           @id @default(uuid())
-  studentId String
-  date      DateTime
-  status    AttendanceStatus
-  lesson    String?          // e.g. "Math Period 1"
-  createdAt DateTime         @default(now())
+  id         String           @id @default(uuid())
+  studentId  String
+  date       DateTime
+  status     AttendanceStatus
+  lesson     String? // display label, e.g. "Mathematics · Period 1"
+  /// Register this mark belongs to: a timetable lesson (TtLesson) in one placed period (TtEntry).
+  /// Plain ids, not relations, so history survives a timetable being rebuilt.
+  lessonId   String?
+  entryId    String?
+  subjectId  String?
+  markedById String?
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @default(now()) @updatedAt
 
-  student   User             @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  student User @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, date, lessonId, entryId])
+  @@index([studentId, date])
+  @@index([date])
+  @@index([lessonId, entryId, date])
 }
 
 model TimetableSlot {
   id        String   @id @default(uuid())
-  day       String   // e.g., "Monday"
-  timeSlot  String   // e.g., "08:00-08:40"
+  day       String // e.g., "Monday"
+  timeSlot  String // e.g., "08:00-08:40"
   subjectId String
   teacherId String?
   classId   String
   createdAt DateTime @default(now())
+
+  @@index([classId])
+  @@index([teacherId])
 }
 
 // Phase 3 Enums
@@ -272,24 +653,53 @@ enum CampaignStatus {
 // Phase 3 Models
 
 model Assignment {
-  id          String         @id @default(uuid())
-  title       String
-  description String?
-  type        AssignmentType
-  subjectId   String?
-  classId     String?
-  teacherId   String
-  dueDate     DateTime
-  maxScore    Int            @default(100)
-  isPublished Boolean        @default(false)
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
+  id             String         @id @default(uuid())
+  title          String
+  description    String?
+  type           AssignmentType
+  subjectId      String?
+  classId        String?
+  teacherId      String
+  dueDate        DateTime
+  maxScore       Int            @default(100)
+  isPublished    Boolean        @default(false)
+  /// Closed assignments stay visible to students but are locked
+  isOpen         Boolean        @default(true)
+  /// FILE_UPLOAD: the teacher's handout (PDF/DOCX/TXT) students download and hand in on paper
+  attachmentUrl  String?
+  attachmentName String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
 
-  subject     Subject?       @relation("SubjectAssignments", fields: [subjectId], references: [id])
-  class       Class?         @relation(fields: [classId], references: [id])
-  teacher     User           @relation("TeacherAssignments", fields: [teacherId], references: [id])
-  questions   QuizQuestion[]
-  submissions AssignmentSubmission[]
+  subject       Subject?               @relation("SubjectAssignments", fields: [subjectId], references: [id])
+  class         Class?                 @relation(fields: [classId], references: [id])
+  teacher       User                   @relation("TeacherAssignments", fields: [teacherId], references: [id])
+  questions     QuizQuestion[]
+  submissions   AssignmentSubmission[]
+  notifications Notification[]
+
+  @@index([classId])
+  @@index([teacherId])
+}
+
+/// In-app alerts shown on a user's dashboard (e.g. a teacher's assignment reminder).
+model Notification {
+  id           String    @id @default(uuid())
+  userId       String
+  type         String // ASSIGNMENT_REMINDER
+  title        String
+  message      String
+  link         String?
+  assignmentId String?
+  senderId     String?
+  readAt       DateTime?
+  createdAt    DateTime  @default(now())
+
+  user       User        @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
+  assignment Assignment? @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@index([assignmentId])
 }
 
 model QuizQuestion {
@@ -297,35 +707,39 @@ model QuizQuestion {
   assignmentId  String
   questionText  String
   questionType  QuestionType
-  options       String?      // JSON stringified array for MCQ, e.g. ["A","B","C","D"]
-  correctAnswer String?      // For MCQ auto-grading
+  options       String? // JSON stringified array for MCQ, e.g. ["A","B","C","D"]
+  correctAnswer String? // For MCQ auto-grading
   points        Int          @default(1)
   sortOrder     Int          @default(0)
   createdAt     DateTime     @default(now())
 
-  assignment    Assignment   @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
-  responses     QuizResponse[]
+  assignment Assignment     @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  responses  QuizResponse[]
+
+  @@index([assignmentId])
 }
 
 model QuizResponse {
-  id            String       @id @default(uuid())
+  id            String   @id @default(uuid())
   submissionId  String
   questionId    String
   answer        String
   isCorrect     Boolean?
   pointsAwarded Int?
-  createdAt     DateTime     @default(now())
+  createdAt     DateTime @default(now())
 
-  submission    AssignmentSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
-  question      QuizQuestion        @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  submission AssignmentSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  question   QuizQuestion         @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId])
 }
 
 model AssignmentSubmission {
   id           String           @id @default(uuid())
   assignmentId String
   studentId    String
-  fileUrl      String?          // Cloudinary URL for file uploads
-  textContent  String?          // For text-based submissions
+  fileUrl      String? // Cloudinary URL for file uploads
+  textContent  String? // For text-based submissions
   score        Float?
   maxScore     Float?
   status       SubmissionStatus @default(PENDING)
@@ -333,93 +747,479 @@ model AssignmentSubmission {
   submittedAt  DateTime         @default(now())
   gradedAt     DateTime?
 
-  assignment   Assignment       @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
-  student      User             @relation("StudentSubmissions", fields: [studentId], references: [id], onDelete: Cascade)
-  responses    QuizResponse[]
+  assignment Assignment     @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  student    User           @relation("StudentSubmissions", fields: [studentId], references: [id], onDelete: Cascade)
+  responses  QuizResponse[]
+
+  @@index([assignmentId])
+  @@index([studentId])
 }
 
 model CommunicationCampaign {
-  id              String         @id @default(uuid())
-  type            CampaignType
-  subject         String?        // Email subject
-  message         String
-  targetAudience  String         // e.g. "ALL_PARENTS", "CLASS:Grade8", "DEBTORS"
-  recipientCount  Int            @default(0)
-  status          CampaignStatus @default(DRAFT)
-  sentById        String
-  sentAt          DateTime?
-  createdAt       DateTime       @default(now())
+  id             String         @id @default(uuid())
+  type           CampaignType
+  subject        String? // Email subject
+  message        String
+  targetAudience String // e.g. "ALL_PARENTS", "CLASS:Grade8", "DEBTORS"
+  recipientCount Int            @default(0)
+  status         CampaignStatus @default(DRAFT)
+  sentById       String
+  sentAt         DateTime?
+  createdAt      DateTime       @default(now())
 
-  sentBy          User           @relation("CampaignsSent", fields: [sentById], references: [id])
-  logs            CommunicationLog[]
+  sentBy User               @relation("CampaignsSent", fields: [sentById], references: [id])
+  logs   CommunicationLog[]
 }
 
 model CommunicationLog {
-  id            String   @id @default(uuid())
-  campaignId    String
-  recipientId   String?
+  id             String   @id @default(uuid())
+  campaignId     String
+  recipientId    String?
   recipientPhone String?
   recipientEmail String?
-  status        String   @default("QUEUED") // QUEUED, SENT, FAILED, DELIVERED
-  errorMessage  String?
-  createdAt     DateTime @default(now())
+  status         String   @default("QUEUED") // QUEUED, SENT, FAILED, DELIVERED
+  errorMessage   String?
+  createdAt      DateTime @default(now())
 
-  campaign      CommunicationCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  campaign CommunicationCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
 }
 
 // Phase 4 Enrollments & Grading
 
 model ClassSubject {
-  id        String @id @default(uuid())
+  id        String  @id @default(uuid())
   classId   String
   subjectId String
   class     Class   @relation(fields: [classId], references: [id], onDelete: Cascade)
   subject   Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
   @@unique([classId, subjectId])
 }
 
 model StudentSubject {
-  id        String @id @default(uuid())
+  id        String  @id @default(uuid())
   studentId String
   subjectId String
   student   User    @relation(fields: [studentId], references: [id], onDelete: Cascade)
   subject   Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
   @@unique([studentId, subjectId])
 }
 
+/// The subjects a teacher is qualified to teach (max two, enforced in the API).
+model TeacherSubject {
+  teacherId String
+  subjectId String
+  teacher   User    @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  subject   Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@id([teacherId, subjectId])
+  @@index([subjectId])
+}
+
 model TeacherSubjectClass {
-  id        String @id @default(uuid())
+  id        String  @id @default(uuid())
   teacherId String
   subjectId String
   classId   String
   teacher   User    @relation(fields: [teacherId], references: [id], onDelete: Cascade)
   subject   Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
   class     Class   @relation(fields: [classId], references: [id], onDelete: Cascade)
+
   @@unique([teacherId, subjectId, classId])
+  @@index([classId])
 }
 
 model ReportCard {
-  id              String   @id @default(uuid())
-  studentId       String
-  term            String
-  totalScore      Float?
-  rank            Int?
-  adminRemark     String?
-  isPublished     Boolean  @default(false)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  
-  student         User     @relation("StudentReportCards", fields: [studentId], references: [id], onDelete: Cascade)
-  subjectGrades   ReportCardSubject[]
+  id          String   @id @default(uuid())
+  studentId   String
+  term        String
+  totalScore  Float?
+  rank        Int?
+  adminRemark String?
+  isPublished Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  student       User                @relation("StudentReportCards", fields: [studentId], references: [id], onDelete: Cascade)
+  subjectGrades ReportCardSubject[]
+
+  @@index([studentId, term])
 }
 
 model ReportCardSubject {
-  id            String   @id @default(uuid())
+  id            String  @id @default(uuid())
   reportCardId  String
   subjectId     String
-  gradeValue    String   // numeric score or letter grade
+  gradeValue    String // numeric score or letter grade
   teacherRemark String?
-  
-  reportCard    ReportCard @relation(fields: [reportCardId], references: [id], onDelete: Cascade)
-  subject       Subject    @relation(fields: [subjectId], references: [id])
+
+  reportCard ReportCard @relation(fields: [reportCardId], references: [id], onDelete: Cascade)
+  subject    Subject    @relation(fields: [subjectId], references: [id])
+
+  @@index([reportCardId])
+}
+
+// ============================================================
+// Timetabling module (see timetable-implementation.md)
+// Teachers, classes and subjects reuse User/Class/Subject.
+// ============================================================
+
+/// School day shown on the grid (e.g. Monday). index orders the columns.
+model TtDay {
+  id    String @id @default(uuid())
+  index Int    @unique
+  name  String
+  short String
+}
+
+/// Bell schedule. Periods in the same block have no break between them (doubles may span them).
+model TtPeriod {
+  id        String @id @default(uuid())
+  index     Int    @unique
+  name      String
+  startTime String // "08:00"
+  endTime   String // "08:40"
+  block     Int    @default(0)
+}
+
+/// A named break between two periods (e.g. "Tea break", "Lunch"), stored with its own times.
+model TtBreak {
+  afterIndex Int    @id // index of the period the break follows
+  name       String
+  startTime  String // "10:00"
+  endTime    String // "10:20"
+}
+
+model TtSubjectInfo {
+  subjectId String  @id
+  short     String
+  color     String  @default("#3b82f6")
+  roomType  String? // e.g. "lab"; null = any general room
+  subject   Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+}
+
+model TtTeacherInfo {
+  teacherId  String @id
+  short      String
+  maxPerDay  Int?
+  maxPerWeek Int?
+  teacher    User   @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+}
+
+model TtRoom {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  short     String
+  type      String   @default("general")
+  capacity  Int?
+  createdAt DateTime @default(now())
+}
+
+/// A slot (day/period) when a teacher, class or room cannot be used.
+model TtUnavailability {
+  id           String @id @default(uuid())
+  resourceType String // teacher | class | room
+  resourceId   String
+  dayIndex     Int
+  periodIndex  Int
+
+  @@unique([resourceType, resourceId, dayIndex, periodIndex])
+  @@index([resourceType, resourceId])
+}
+
+/// Singleton (id = 1): generator rules and room handling.
+model TtSettings {
+  id                 Int     @id @default(1)
+  ignoreGeneralRooms Boolean @default(true)
+  rules              Json    @default("{\"spreadSubjects\":true,\"noSameSubjectTwiceADay\":true,\"minimiseTeacherGaps\":true,\"respectMaxPerDay\":true,\"preferMorning\":true}")
+}
+
+model TtTimetable {
+  id          String    @id @default(uuid())
+  name        String
+  term        String
+  status      String    @default("draft") // draft | published | archived
+  createdById String?
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  lessons       TtLesson[]
+  groups        TtParallelGroup[]
+  entries       TtEntry[]
+  jobs          TtJob[]
+  substitutions TtSubstitution[]
+
+  @@index([status, term])
+}
+
+/// Option block: lessons that run at the same time for a level (students split between them).
+model TtParallelGroup {
+  id          String      @id @default(uuid())
+  timetableId String
+  name        String
+  timetable   TtTimetable @relation(fields: [timetableId], references: [id], onDelete: Cascade)
+  lessons     TtLesson[]
+}
+
+/// What has to be taught: subject × classes × teachers, N periods a week.
+model TtLesson {
+  id             String            @id @default(uuid())
+  timetableId    String
+  subjectId      String
+  periodsPerWeek Int
+  doublesPerWeek Int               @default(0)
+  roomType       String? // overrides the subject's room type
+  groupId        String?
+  createdAt      DateTime          @default(now())
+  timetable      TtTimetable       @relation(fields: [timetableId], references: [id], onDelete: Cascade)
+  subject        Subject           @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  group          TtParallelGroup?  @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  classes        TtLessonClass[]
+  teachers       TtLessonTeacher[]
+
+  @@index([timetableId])
+}
+
+model TtLessonClass {
+  lessonId String
+  classId  String
+  lesson   TtLesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  class    Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@id([lessonId, classId])
+  @@index([classId])
+}
+
+model TtLessonTeacher {
+  lessonId  String
+  teacherId String
+  lesson    TtLesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  teacher   User     @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+
+  @@id([lessonId, teacherId])
+  @@index([teacherId])
+}
+
+/// One placed card. cardKey = "<lessonId>#<n>" or "G:<groupId>#<n>" for an option block.
+model TtEntry {
+  id            String           @id @default(uuid())
+  timetableId   String
+  cardKey       String
+  dayIndex      Int
+  periodIndex   Int
+  length        Int              @default(1)
+  roomIds       Json             @default("[]") // aligned with the card's lessons; null = no room
+  locked        Boolean          @default(false)
+  createdAt     DateTime         @default(now())
+  timetable     TtTimetable      @relation(fields: [timetableId], references: [id], onDelete: Cascade)
+  occupancy     TtOccupancy[]
+  substitutions TtSubstitution[]
+
+  @@unique([timetableId, cardKey])
+  @@index([timetableId, dayIndex, periodIndex])
+}
+
+/// Last line of defence: one row per resource per period. The unique key makes a
+/// double-booking impossible even if application code is wrong.
+model TtOccupancy {
+  id           String  @id @default(uuid())
+  timetableId  String
+  entryId      String
+  resourceType String // teacher | class | room
+  resourceId   String
+  dayIndex     Int
+  periodIndex  Int
+  entry        TtEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  @@unique([timetableId, resourceType, resourceId, dayIndex, periodIndex])
+  @@index([timetableId, resourceType, resourceId])
+}
+
+model TtJob {
+  id              String      @id @default(uuid())
+  timetableId     String
+  status          String      @default("queued") // queued | running | done | failed | cancelled
+  progress        Int         @default(0)
+  placed          Int?
+  total           Int?
+  result          Json?
+  error           String?
+  cancelRequested Boolean     @default(false)
+  createdById     String?
+  createdAt       DateTime    @default(now())
+  finishedAt      DateTime?
+  timetable       TtTimetable @relation(fields: [timetableId], references: [id], onDelete: Cascade)
+
+  @@index([timetableId, status])
+}
+
+model TtSubstitution {
+  id              String      @id @default(uuid())
+  timetableId     String
+  date            DateTime    @db.Date
+  entryId         String
+  absentTeacherId String
+  coverTeacherId  String?
+  note            String?
+  createdAt       DateTime    @default(now())
+  timetable       TtTimetable @relation(fields: [timetableId], references: [id], onDelete: Cascade)
+  entry           TtEntry     @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  @@unique([date, entryId, absentTeacherId])
+  @@index([date])
+}
+
+model TtAudit {
+  id          String   @id @default(uuid())
+  actorId     String?
+  timetableId String?
+  action      String
+  detail      Json?
+  createdAt   DateTime @default(now())
+
+  @@index([timetableId, createdAt])
+}
+
+// ============================================================
+// Newsletters: rich-text messages to an audience, read in the portal or downloaded as PDF
+// ============================================================
+
+enum NewsletterAudience {
+  ALL_STUDENTS
+  CLASS_STUDENTS
+  ALL_TEACHERS
+  ALL_PARENTS
+  DEBTOR_PARENTS
+  CLASS_PARENTS
+}
+
+enum NewsletterStatus {
+  DRAFT
+  SENT
+}
+
+model Newsletter {
+  id        String             @id @default(uuid())
+  subject   String
+  /// Tiptap document JSON; the portal and the PDF both render from it
+  content   Json
+  audience  NewsletterAudience
+  /// Set for CLASS_STUDENTS and CLASS_PARENTS
+  classId   String?
+  status    NewsletterStatus   @default(DRAFT)
+  sentById  String
+  sentAt    DateTime?
+  /// Last edit after sending; recipients see the edited version
+  editedAt  DateTime?
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  class      Class?                @relation(fields: [classId], references: [id], onDelete: SetNull)
+  sentBy     User                  @relation("NewslettersSent", fields: [sentById], references: [id])
+  recipients NewsletterRecipient[]
+
+  @@index([status, sentAt])
+}
+
+/// Who a sent newsletter went to (resolved once, when it was sent)
+model NewsletterRecipient {
+  id           String    @id @default(uuid())
+  newsletterId String
+  userId       String
+  openedAt     DateTime?
+  /// Dashboard banner closed; cleared again when the newsletter is edited
+  dismissedAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  newsletter Newsletter @relation(fields: [newsletterId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([newsletterId, userId])
+  @@index([userId, dismissedAt])
+}
+
+// ============================================================
+// Admissions drafts and leavers' clearance
+// ============================================================
+
+/// A partly filled admission form, saved so the office can finish it later. Passwords are never stored.
+model AdmissionDraft {
+  id          String   @id @default(uuid())
+  /// Student name (or "Untitled") for the drafts list
+  label       String
+  data        Json
+  step        Int      @default(0)
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([updatedAt])
+}
+
+/// A leaver's final clearance. Fees are checked live; library and disciplinary holds are set by the office.
+/// Once released, the leaving certificate can be downloaded and the student's status becomes leavingStatus.
+model ClearanceRequest {
+  id                String    @id @default(uuid())
+  studentId         String    @unique
+  /// COMPLETED | TRANSFERRED
+  leavingStatus     Status
+  /// PENDING | RELEASED
+  status            String    @default("PENDING")
+  libraryHold       Boolean   @default(false)
+  libraryNote       String?
+  disciplinaryHold  Boolean   @default(false)
+  disciplinaryNote  String?
+  requestedById     String
+  releasedById      String?
+  releasedAt        DateTime?
+  certificateNumber String?   @unique
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  student User @relation("StudentClearance", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+}
+
+/// A "prompt parent" SMS sent by finance; shown in the student's fee history beside their payments.
+model FeeReminder {
+  id        String   @id @default(uuid())
+  studentId String
+  term      String
+  balance   Float
+  message   String
+  /// Phone numbers the SMS went to
+  phones    String[]
+  /// SENT | FAILED | SKIPPED (SMS turned off, not configured, or no parent phone)
+  status    String
+  error     String?
+  sentById  String
+  createdAt DateTime @default(now())
+
+  @@index([studentId, createdAt])
+}
+
+/// One run of the nightly M-Pesa reconciliation job: STK prompts whose callback never arrived are
+/// re-checked with Daraja, and anything that still doesn't line up is listed for finance to review.
+model MpesaReconciliationRun {
+  id         String    @id @default(uuid())
+  /// SCHEDULED | MANUAL
+  trigger    String
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  /// Prompts re-checked with Daraja
+  checked    Int       @default(0)
+  /// Payments credited because their callback had been lost
+  recovered  Int       @default(0)
+  /// Prompts confirmed as failed or cancelled
+  failed     Int       @default(0)
+  /// [{ "type", "reference", "amount", "studentId", "detail" }] for finance to review
+  mismatches Json      @default("[]")
+  error      String?
+
+  @@index([startedAt])
 }

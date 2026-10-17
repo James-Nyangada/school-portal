@@ -3,11 +3,15 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "nodemon src/index.ts"
+    "test": "vitest run",
+    "dev": "nodemon src/index.ts",
+    "test:tt-smoke": "node scripts/tt-smoke.js",
+    "sync:tt-core": "node scripts/sync-tt-core.js",
+    "mpesa:register-c2b": "ts-node -P tsconfig.scripts.json --transpile-only scripts/mpesa-register-c2b.ts",
+    "seed:timetable-demo": "ts-node -P tsconfig.scripts.json --transpile-only prisma/seed-timetable-demo.ts"
   },
   "prisma": {
-    "seed": "ts-node prisma/seed.ts"
+    "seed": "ts-node -P tsconfig.scripts.json prisma/seed.ts"
   },
   "keywords": [],
   "author": "",
@@ -19,9 +23,11 @@
     "cloudinary": "^2.10.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
+    "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.2.0",
+    "pdfkit": "^0.15.2",
     "prisma": "^5.22.0",
     "zod": "^4.4.3"
   },
@@ -32,8 +38,11 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/multer": "^2.1.0",
     "@types/node": "^26.0.1",
+    "@types/pdfkit": "^0.17.6",
+    "@vitest/coverage-v8": "^5.0.3",
     "nodemon": "^3.1.14",
     "ts-node": "^10.9.2",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.3"
   }
 }

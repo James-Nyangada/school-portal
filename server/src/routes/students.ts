@@ -1,10 +1,15 @@
 import { Router } from 'express';
-import { requireAuth, requireRole } from '../middleware/auth';
-import { PrismaClient, Role, Status } from '@prisma/client';
+import { z } from 'zod';
+import { requireAuth, requireRole, AuthRequest } from '../middleware/auth';
+import { Role, Status } from '@prisma/client';
 import bcrypt from 'bcrypt';
+import { prisma } from '../lib/prisma';
+import { ensureStudentBilled, FEE_TX, structureTotal } from '../services/fees';
+import { getSettings } from '../services/grading';
+import { planFor, plansOf, termStartOf } from '../services/paymentPlans';
+import { sendAdmissionCredentialsSms, smsSummary } from '../services/sms';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 // POST /api/students/admit
 router.post('/admit', requireAuth, requireRole('ADMIN', 'SUPER_ADMIN'), async (req: any, res) => {
@@ -143,17 +148,138 @@ router.post('/admit', requireAuth, requireRole('ADMIN', 'SUPER_ADMIN'), async (r
       }
     });
 
+    // Bill the current term from the class's published fee structure, on the installment plan chosen at admission
+    const settings = await getSettings();
+    const plan = planFor(plansOf(settings), typeof req.body.paymentPlan === 'string' ? req.body.paymentPlan : 'FULL');
+    await prisma.$transaction(async (tx) => {
+      await ensureStudentBilled(tx, newStudent.id);
+      await tx.feeRecord.updateMany({ where: { studentId: newStudent.id, term: settings.currentTerm }, data: { paymentPlan: plan.code } });
+    }, FEE_TX);
+
+    // A finished draft is no longer needed
+    if (typeof req.body.draftId === 'string') await prisma.admissionDraft.deleteMany({ where: { id: req.body.draftId } });
+
     await prisma.auditLog.create({
       data: {
         actorId: req.user.id,
         action: 'ADMIT_STUDENT',
         targetId: newStudent.id,
-        details: `Admitted student ${firstName} ${lastName}`
+        details: `Admitted student ${firstName} ${lastName} · fee plan: ${plan.name}`
       }
     });
 
+    const sms = parentPhone
+      ? await sendAdmissionCredentialsSms({
+          parentPhone,
+          studentName: `${firstName} ${lastName}`,
+          studentEmail: newStudent.email,
+          tempPassword,
+          admissionNumber: finalAdmissionNumber
+        })
+      : null;
+
     const { passwordHash: _, ...rest } = newStudent;
-    res.status(201).json({ ...rest, tempPassword });
+    res.status(201).json({ ...rest, tempPassword, paymentPlan: plan.code, sms: sms ? smsSummary(sms) : null });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ============================================================
+// Admission drafts (§2.2): partly filled forms the office can finish later. Passwords are never stored.
+// ============================================================
+const DRAFT_SECRETS = ['studentPassword', 'parentPassword'];
+const draftSchema = z.object({
+  data: z.record(z.string(), z.unknown()).refine((d) => JSON.stringify(d).length <= 50_000, 'Draft is too large'),
+  step: z.number().int().min(0).max(10).default(0)
+});
+const draftLabel = (d: Record<string, unknown>) =>
+  [d.firstName, d.lastName].filter((v) => typeof v === 'string' && v.trim()).join(' ').trim() || 'Untitled admission';
+const withoutSecrets = (d: Record<string, unknown>) => Object.fromEntries(Object.entries(d).filter(([k]) => !DRAFT_SECRETS.includes(k)));
+
+// GET /api/students/admission-drafts
+router.get('/admission-drafts', requireAuth, requireRole('ADMIN'), async (_req, res) => {
+  try {
+    const drafts = await prisma.admissionDraft.findMany({ orderBy: { updatedAt: 'desc' }, take: 100 });
+    const authors = await prisma.user.findMany({
+      where: { id: { in: [...new Set(drafts.map((d) => d.createdById))] } },
+      select: { id: true, firstName: true, lastName: true }
+    });
+    const nameOf = new Map(authors.map((a) => [a.id, [a.firstName, a.lastName].filter(Boolean).join(' ')]));
+    res.json(drafts.map((d) => ({ ...d, createdBy: nameOf.get(d.createdById) ?? null })));
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/students/admission-drafts
+router.post('/admission-drafts', requireAuth, requireRole('ADMIN'), async (req: AuthRequest, res) => {
+  const parsed = draftSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid draft' });
+  try {
+    const data = withoutSecrets(parsed.data.data);
+    const draft = await prisma.admissionDraft.create({
+      data: { data: data as object, step: parsed.data.step, label: draftLabel(data), createdById: req.user!.id }
+    });
+    res.status(201).json(draft);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// PUT /api/students/admission-drafts/:id
+router.put('/admission-drafts/:id', requireAuth, requireRole('ADMIN'), async (req, res) => {
+  const parsed = draftSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid draft' });
+  try {
+    const data = withoutSecrets(parsed.data.data);
+    const updated = await prisma.admissionDraft.updateMany({
+      where: { id: req.params.id as string },
+      data: { data: data as object, step: parsed.data.step, label: draftLabel(data) }
+    });
+    if (updated.count === 0) return res.status(404).json({ error: 'Draft not found' });
+    res.json(await prisma.admissionDraft.findUnique({ where: { id: req.params.id as string } }));
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/students/admission-drafts/:id
+router.delete('/admission-drafts/:id', requireAuth, requireRole('ADMIN'), async (req, res) => {
+  try {
+    await prisma.admissionDraft.deleteMany({ where: { id: req.params.id as string } });
+    res.json({ message: 'Draft deleted' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/students/admission-fee-plan?classId= — the fee structure the class will be billed and the plans offered
+router.get('/admission-fee-plan', requireAuth, requireRole('ADMIN'), async (req, res) => {
+  try {
+    const settings = await getSettings();
+    const classId = typeof req.query.classId === 'string' ? req.query.classId : '';
+    const link = classId
+      ? await prisma.feeStructureClass.findUnique({
+          where: { classId_term: { classId, term: settings.currentTerm } },
+          include: { structure: { include: { items: { orderBy: { sortOrder: 'asc' } } } } }
+        })
+      : null;
+    const structure = link?.structure.status === 'PUBLISHED' ? link.structure : null;
+
+    res.json({
+      term: settings.currentTerm,
+      termStart: await termStartOf(settings.currentTerm),
+      structure: structure
+        ? { id: structure.id, name: structure.name, total: structureTotal(structure.items), items: structure.items.map((i) => ({ name: i.name, amount: i.amount })) }
+        : null,
+      plans: plansOf(settings)
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Internal server error' });
@@ -374,6 +500,11 @@ router.patch('/:id', requireAuth, requireRole('ADMIN', 'SUPER_ADMIN'), async (re
 
       return updatedStudent;
     });
+
+    // Moved to another class: bill this term from the new class's fee structure (overrides are kept)
+    if (classId !== undefined && (classId || null) !== student.classId) {
+      await prisma.$transaction((tx) => ensureStudentBilled(tx, studentId), FEE_TX);
+    }
 
     res.json({ message: 'Student information updated successfully', student: result });
   } catch (error: any) {

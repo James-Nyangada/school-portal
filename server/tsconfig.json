@@ -40,7 +40,10 @@
     "noUncheckedSideEffectImports": true,
     "moduleDetection": "force",
     "skipLibCheck": true,
+    // TypeScript 6 requires rootDir to be explicit (TS5011); scripts outside src use tsconfig.scripts.json
+    "rootDir": "./src",
   },
+  "include": ["src/**/*.ts"],
   "ts-node": {
     "compilerOptions": {
       "module": "CommonJS",
