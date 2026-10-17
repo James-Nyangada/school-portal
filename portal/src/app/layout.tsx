@@ -28,7 +28,10 @@ export default async function RootLayout({
 	const session = await auth();
 
 	return (
-		<html lang="en">
+		<html
+			lang="en"
+			suppressHydrationWarning
+		>
 			<head>
 				<meta charSet="utf-8" />
 				<meta
@@ -56,6 +59,7 @@ export default async function RootLayout({
 			</head>
 			<body
 				id="root"
+				suppressHydrationWarning
 				className={clsx('loading')}
 			>
 				<SessionProvider

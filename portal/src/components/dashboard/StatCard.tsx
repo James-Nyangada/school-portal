@@ -32,13 +32,15 @@ export function StatCard({
         <span className="flex-1 min-w-0 text-right text-[11px] font-semibold tracking-wide text-gray-400 uppercase leading-tight mt-1">
           {label}
         </span>
-        <button
-          onClick={onMenuClick}
-          className="text-gray-400 hover:text-gray-600 shrink-0"
-          aria-label="Card options"
-        >
-          <FuseSvgIcon size={16}>lucide:more-vertical</FuseSvgIcon>
-        </button>
+        {onMenuClick && (
+          <button
+            onClick={onMenuClick}
+            className="text-gray-400 hover:text-gray-600 shrink-0"
+            aria-label="Card options"
+          >
+            <FuseSvgIcon size={16}>lucide:ellipsis-vertical</FuseSvgIcon>
+          </button>
+        )}
       </div>
 
       {/* Row 2: big number */}

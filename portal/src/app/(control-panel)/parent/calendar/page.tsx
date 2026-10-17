@@ -56,15 +56,15 @@ export default function ParentCalendar() {
 		<AuthGuardRedirect auth={['PARENT']}>
 			<FusePageSimple
 				content={
-					<div className="mx-auto flex w-full max-w-7xl flex-col gap-32 px-24 py-32">
+					<div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 sm:py-8">
 						{/* Header */}
-						<div className="border-b border-gray-100 pb-16">
+						<div className="border-b border-gray-100 pb-4">
 							<Typography className="text-4xl font-extrabold tracking-tight">
 								School Calendar & Events
 							</Typography>
 							<Typography
 								color="text.secondary"
-								className="mt-8"
+								className="mt-2"
 							>
 								Stay updated with term schedules, exam periods, and upcoming events.
 							</Typography>
@@ -78,22 +78,22 @@ export default function ParentCalendar() {
 							<Grid size={{ xs: 12, md: 4 }}>
 								<Typography
 									variant="h6"
-									className="mb-16 font-bold text-slate-800"
+									className="mb-4 font-bold text-slate-800"
 								>
 									Term Dates
 								</Typography>
-								<div className="flex flex-col gap-16">
+								<div className="flex flex-col gap-4">
 									{termDates.map((term, index) => (
 										<Paper
 											key={index}
-											className="rounded-2xl border border-gray-100 bg-white p-20 shadow-sm"
+											className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm"
 											elevation={0}
 										>
 											<Typography className="text-base font-bold text-slate-800">
 												{term.name}
 											</Typography>
 
-											<div className="mt-16 flex flex-col gap-8 text-sm text-slate-600">
+											<div className="mt-4 flex flex-col gap-2 text-sm text-slate-600">
 												<div className="flex items-center justify-between">
 													<span>Starts:</span>
 													<span className="font-semibold text-slate-800">{term.start}</span>
@@ -104,12 +104,12 @@ export default function ParentCalendar() {
 												</div>
 											</div>
 
-											<div className="mt-20 flex items-center justify-between border-t border-gray-100 pt-16">
+											<div className="mt-5 flex items-center justify-between border-t border-gray-100 pt-4">
 												<span className="text-xs font-bold tracking-wider text-slate-400 uppercase">
 													Status
 												</span>
 												<span
-													className={`rounded-full px-10 py-4 text-xs font-bold ${
+													className={`rounded-full px-2.5 py-1 text-xs font-bold ${
 														term.status === 'In Progress'
 															? 'bg-blue-50 text-blue-700'
 															: 'bg-slate-100 text-slate-600'
@@ -127,36 +127,36 @@ export default function ParentCalendar() {
 							<Grid size={{ xs: 12, md: 8 }}>
 								<Typography
 									variant="h6"
-									className="mb-16 font-bold text-slate-800"
+									className="mb-4 font-bold text-slate-800"
 								>
 									Upcoming Events & Schedules
 								</Typography>
-								<div className="flex flex-col gap-16">
+								<div className="flex flex-col gap-4">
 									{events.map((event, index) => (
 										<Paper
 											key={index}
-											className={`flex items-start gap-16 rounded-2xl border-l-4 p-24 shadow-sm ${event.color} border border-gray-100 bg-white transition-shadow duration-200 hover:shadow-md`}
+											className={`flex items-start gap-4 rounded-2xl border-l-4 p-6 shadow-sm ${event.color} border border-gray-100 bg-white transition-shadow duration-200 hover:shadow-md`}
 											elevation={0}
 										>
-											<div className={`p-10 ${event.iconColor} shrink-0 rounded-xl`}>
+											<div className={`p-2.5 ${event.iconColor} shrink-0 rounded-xl`}>
 												<FuseSvgIcon size={22}>{event.icon}</FuseSvgIcon>
 											</div>
 											<div className="min-w-0 flex-1">
-												<div className="mb-4 flex flex-wrap items-center justify-between gap-8">
+												<div className="mb-1 flex flex-wrap items-center justify-between gap-2">
 													<Typography
 														variant="h6"
 														className="text-base leading-tight font-bold text-slate-800"
 													>
 														{event.title}
 													</Typography>
-													<span className="scale-90 rounded-full bg-slate-100 px-10 py-4 text-xs font-bold tracking-wider text-slate-700 uppercase">
+													<span className="scale-90 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold tracking-wider text-slate-700 uppercase">
 														{event.type}
 													</span>
 												</div>
 												<Typography
 													variant="caption"
 													color="text.secondary"
-													className="mb-8 block font-bold"
+													className="mb-2 block font-bold"
 												>
 													{event.date}
 												</Typography>

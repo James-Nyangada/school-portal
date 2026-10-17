@@ -1,251 +1,222 @@
 'use client';
 
-import { useState } from 'react';
-import {
-	Paper,
-	Typography,
-	Tabs,
-	Tab,
-	TextField,
-	Button,
-	Switch,
-	FormControlLabel,
-	Grid,
-	Divider,
-	Chip
-} from '@mui/material';
-import FusePageSimple from '@fuse/core/FusePageSimple';
+import { useEffect, useState } from 'react';
+import { Alert, Button, Chip, CircularProgress, Divider, FormControlLabel, Switch, Typography } from '@mui/material';
 import AuthGuardRedirect from '@auth/AuthGuardRedirect';
-import FuseSvgIcon from '@fuse/core/FuseSvgIcon';
+import GradingSettingsPanel from '@/components/grading/GradingSettingsPanel';
+import SchoolSettingsPage from '@/components/school/SchoolSettingsPage';
+import { errorMessage, useSchoolApi } from '@/components/school/api';
+import useToast from '@/hooks/useToast';
 
-export default function SuperAdminSettings() {
-	const [activeTab, setActiveTab] = useState(0);
+type Features = { mpesaEnabled: boolean; smsEnabled: boolean; newsletterEnabled: boolean; assignmentsEnabled: boolean };
+type Integration = { key: string; name: string; hint: string; connected: boolean; detail: string };
+
+const FEATURES: { key: keyof Features; label: string; hint: string }[] = [
+	{ key: 'mpesaEnabled', label: 'M-Pesa payments', hint: 'Parents (and permitted students) pay fees by STK push.' },
+	{ key: 'smsEnabled', label: 'SMS notifications', hint: 'Admission credentials, absence alerts and fee reminders.' },
+	{ key: 'newsletterEnabled', label: 'Newsletters', hint: 'Admins can write and send newsletters.' },
+	{
+		key: 'assignmentsEnabled',
+		label: 'Assignments & quizzes',
+		hint: 'Teachers can create new assignments and quizzes.'
+	}
+];
+
+function FeatureToggles() {
+	const api = useSchoolApi();
+	const { confirm, notify } = useToast();
+	const [saved, setSaved] = useState<Features | null>(null);
+	const [form, setForm] = useState<Features | null>(null);
+	const [saving, setSaving] = useState(false);
+	const [error, setError] = useState('');
+
+	useEffect(() => {
+		if (!api.ready) return;
+
+		api.get<Features>('/features')
+			.then((f) => {
+				setSaved(f);
+				setForm(f);
+			})
+			.catch((e) => setError(errorMessage(e)));
+	}, [api]);
+
+	if (!form || !saved) {
+		return error ? (
+			<Alert severity="error">{error}</Alert>
+		) : (
+			<div className="flex justify-center py-12">
+				<CircularProgress />
+			</div>
+		);
+	}
+
+	const changed = FEATURES.filter((f) => form[f.key] !== saved[f.key]);
+	const switchedOff = changed.filter((f) => !form[f.key]);
+
+	const save = async () => {
+		if (
+			switchedOff.length > 0 &&
+			!(await confirm(
+				`Turn off ${switchedOff.map((f) => f.label).join(', ')} for the whole school? This takes effect immediately for every user.`,
+				{ destructive: true }
+			))
+		)
+			return;
+
+		setSaving(true);
+		try {
+			const next = await api.put<Features>('/features', form);
+			setSaved(next);
+			setForm(next);
+			notify('Feature toggles saved', 'success');
+		} catch (e) {
+			notify(errorMessage(e), 'error');
+		} finally {
+			setSaving(false);
+		}
+	};
 
 	return (
-		<AuthGuardRedirect auth={['SUPER_ADMIN']}>
-			<FusePageSimple
-				content={
-					<div className="mx-auto flex w-full max-w-7xl flex-col gap-32 px-24 py-32">
-						<div className="flex w-full flex-col">
-							<Typography className="text-4xl font-extrabold tracking-tight">System Settings</Typography>
-							<Typography className="text-secondary mt-8">
-								Configure global school preferences and integrations.
+		<div className="flex flex-col gap-4">
+			<div>
+				<Typography variant="subtitle1">System modules</Typography>
+				<Typography
+					variant="body2"
+					color="text.secondary"
+				>
+					Every change is recorded in the audit log. CBC vs numeric grading is set in the Grading tab.
+				</Typography>
+			</div>
+			<Divider />
+			{FEATURES.map((f) => (
+				<FormControlLabel
+					key={f.key}
+					control={
+						<Switch
+							checked={form[f.key]}
+							onChange={(e) => setForm({ ...form, [f.key]: e.target.checked })}
+						/>
+					}
+					label={
+						<div>
+							<Typography>{f.label}</Typography>
+							<Typography
+								variant="body2"
+								color="text.secondary"
+							>
+								{f.hint}
 							</Typography>
 						</div>
+					}
+				/>
+			))}
+			<div className="mt-2 flex gap-2">
+				<Button
+					variant="contained"
+					color="primary"
+					disabled={saving || changed.length === 0}
+					onClick={save}
+					startIcon={saving ? <CircularProgress size={16} /> : undefined}
+				>
+					Save toggles
+				</Button>
+				{changed.length > 0 && (
+					<Button
+						disabled={saving}
+						onClick={() => setForm(saved)}
+					>
+						Discard
+					</Button>
+				)}
+			</div>
+		</div>
+	);
+}
 
-						<Paper className="bg-card flex flex-auto flex-col rounded-2xl p-24 shadow">
-							<Tabs
-								value={activeTab}
-								onChange={(e, val) => setActiveTab(val)}
-								indicatorColor="primary"
-								textColor="primary"
-								variant="scrollable"
-								scrollButtons="auto"
-								className="border-b"
+function Integrations() {
+	const api = useSchoolApi();
+	const [rows, setRows] = useState<Integration[] | null>(null);
+	const [error, setError] = useState('');
+
+	useEffect(() => {
+		if (!api.ready) return;
+
+		api.get<Integration[]>('/integrations')
+			.then(setRows)
+			.catch((e) => setError(errorMessage(e)));
+	}, [api]);
+
+	if (!rows) {
+		return error ? (
+			<Alert severity="error">{error}</Alert>
+		) : (
+			<div className="flex justify-center py-12">
+				<CircularProgress />
+			</div>
+		);
+	}
+
+	return (
+		<div className="flex flex-col gap-6">
+			<Alert severity="info">
+				Credentials are kept in the server&apos;s environment file and are never shown here. To connect or
+				replace an integration, update <code>server/.env</code> and restart the API.
+			</Alert>
+			{rows.map((r, i) => (
+				<div
+					key={r.key}
+					className="flex flex-col gap-6"
+				>
+					{i > 0 && <Divider />}
+					<div className="flex items-center justify-between gap-4">
+						<div>
+							<Typography
+								variant="subtitle1"
+								fontWeight="bold"
 							>
-								<Tab label="School Info" />
-								<Tab label="Academic Calendar" />
-								<Tab label="Fee Structure" />
-								<Tab label="Feature Toggles" />
-								<Tab label="Integrations" />
-							</Tabs>
-
-							<div className="mt-24">
-								{activeTab === 0 && (
-									<Grid
-										container
-										spacing={3}
-									>
-										<Grid size={{ xs: 12, md: 6 }}>
-											<TextField
-												fullWidth
-												label="School Name"
-												defaultValue="Jema Faith Academy"
-											/>
-										</Grid>
-										<Grid size={{ xs: 12, md: 6 }}>
-											<TextField
-												fullWidth
-												label="Domain"
-												defaultValue="jemafaith.ac.ke"
-											/>
-										</Grid>
-										<Grid size={{ xs: 12, md: 6 }}>
-											<TextField
-												fullWidth
-												label="Contact Email"
-												defaultValue="info@jemafaith.ac.ke"
-											/>
-										</Grid>
-										<Grid size={{ xs: 12, md: 6 }}>
-											<TextField
-												fullWidth
-												label="Contact Phone"
-												defaultValue="+254 700 000000"
-											/>
-										</Grid>
-										<Grid size={12}>
-											<Button
-												variant="contained"
-												color="primary"
-											>
-												Save Changes
-											</Button>
-										</Grid>
-									</Grid>
-								)}
-
-								{activeTab === 1 && (
-									<Grid
-										container
-										spacing={3}
-									>
-										<Grid size={{ xs: 12, md: 6 }}>
-											<TextField
-												fullWidth
-												label="Current Term Start Date"
-												type="date"
-												InputLabelProps={{ shrink: true }}
-												defaultValue="2026-05-04"
-											/>
-										</Grid>
-										<Grid size={{ xs: 12, md: 6 }}>
-											<TextField
-												fullWidth
-												label="Current Term End Date"
-												type="date"
-												InputLabelProps={{ shrink: true }}
-												defaultValue="2026-08-07"
-											/>
-										</Grid>
-										<Grid size={12}>
-											<Button
-												variant="contained"
-												color="primary"
-											>
-												Update Calendar
-											</Button>
-										</Grid>
-									</Grid>
-								)}
-
-								{activeTab === 2 && (
-									<div className="flex flex-col gap-16">
-										<div>
-											<Typography
-												variant="subtitle1"
-												gutterBottom
-											>
-												Fee Items (Tuition, Transport, Lunch, etc.)
-											</Typography>
-											<Typography className="text-secondary">
-												Configure the standard fee structures for each grade.
-											</Typography>
-										</div>
-										<div className="flex flex-col items-center rounded-xl border p-24 text-center">
-											<FuseSvgIcon
-												size={48}
-												className="mb-8 text-gray-400"
-											>
-												lucide:wallet
-											</FuseSvgIcon>
-											<Typography>Fee structure configuration will be available soon.</Typography>
-										</div>
-									</div>
-								)}
-
-								{activeTab === 3 && (
-									<div className="flex flex-col gap-16">
-										<Typography variant="subtitle1">System Modules</Typography>
-										<Divider />
-										<FormControlLabel
-											control={<Switch defaultChecked />}
-											label="Enable M-Pesa Integration"
-										/>
-										<FormControlLabel
-											control={<Switch defaultChecked />}
-											label="Enable SMS Notifications"
-										/>
-										<FormControlLabel
-											control={<Switch defaultChecked />}
-											label="Enable CBC Mode (Competency Based Curriculum)"
-										/>
-										<FormControlLabel
-											control={<Switch defaultChecked />}
-											label="Enable Newsletter System"
-										/>
-										<div className="mt-16">
-											<Button
-												variant="contained"
-												color="primary"
-											>
-												Save Toggles
-											</Button>
-										</div>
-									</div>
-								)}
-
-								{activeTab === 4 && (
-									<div className="flex flex-col gap-24">
-										<div className="flex items-center justify-between">
-											<div>
-												<Typography
-													variant="subtitle1"
-													fontWeight="bold"
-												>
-													Daraja API (Safaricom M-Pesa)
-												</Typography>
-												<Typography className="text-secondary">
-													For automated fee collection.
-												</Typography>
-											</div>
-											<Chip
-												label="Connected"
-												color="success"
-											/>
-										</div>
-										<Divider />
-										<div className="flex items-center justify-between">
-											<div>
-												<Typography
-													variant="subtitle1"
-													fontWeight="bold"
-												>
-													Africa's Talking SMS Gateway
-												</Typography>
-												<Typography className="text-secondary">
-													For parent notifications and alerts.
-												</Typography>
-											</div>
-											<Chip
-												label="Not Connected"
-												color="default"
-											/>
-										</div>
-										<Divider />
-										<div className="flex items-center justify-between">
-											<div>
-												<Typography
-													variant="subtitle1"
-													fontWeight="bold"
-												>
-													SendGrid Email API
-												</Typography>
-												<Typography className="text-secondary">
-													For system emails and newsletters.
-												</Typography>
-											</div>
-											<Chip
-												label="Connected"
-												color="success"
-											/>
-										</div>
-									</div>
-								)}
-							</div>
-						</Paper>
+								{r.name}
+							</Typography>
+							<Typography className="text-secondary">{r.hint}</Typography>
+							<Typography
+								variant="caption"
+								color="text.secondary"
+							>
+								{r.detail}
+							</Typography>
+						</div>
+						<Chip
+							label={r.connected ? 'Connected' : 'Not connected'}
+							color={r.connected ? 'success' : 'default'}
+						/>
 					</div>
-				}
+				</div>
+			))}
+		</div>
+	);
+}
+
+export default function SuperAdminSettings() {
+	return (
+		<AuthGuardRedirect auth={['SUPER_ADMIN']}>
+			<SchoolSettingsPage
+				title="System Settings"
+				subtitle="School information for the website, the academic calendar, grading and integrations."
+				extraTabs={[
+					{
+						key: 'grading',
+						label: 'Grading',
+						icon: 'lucide:graduation-cap',
+						render: () => <GradingSettingsPanel />
+					},
+					{
+						key: 'features',
+						label: 'Feature Toggles',
+						icon: 'lucide:toggle-right',
+						render: () => <FeatureToggles />
+					},
+					{ key: 'integrations', label: 'Integrations', icon: 'lucide:plug', render: () => <Integrations /> }
+				]}
 			/>
 		</AuthGuardRedirect>
 	);

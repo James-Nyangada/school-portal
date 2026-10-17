@@ -15,6 +15,7 @@ import {
 } from '@mui/material';
 import FusePageSimple from '@fuse/core/FusePageSimple';
 import AuthGuardRedirect from '@auth/AuthGuardRedirect';
+import { BACKEND_URL } from '@/lib/backend';
 
 export default function StudentSubjects() {
 	const { data: session } = useSession();
@@ -27,7 +28,7 @@ export default function StudentSubjects() {
 
 		const fetchSubjects = async () => {
 			try {
-				const res = await fetch('http://localhost:4000/api/student/subjects', {
+				const res = await fetch(`${BACKEND_URL}/api/student/subjects`, {
 					headers: { Authorization: `Bearer ${token}` }
 				});
 

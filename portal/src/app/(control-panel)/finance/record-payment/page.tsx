@@ -1,221 +1,346 @@
 'use client';
 
-import { useState } from 'react';
-import { useSession } from 'next-auth/react';
+import Link from 'next/link';
+import { Suspense, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Typography, Paper, TextField, MenuItem, Button, CircularProgress, Alert, InputAdornment } from '@mui/material';
+import {
+	Alert,
+	Autocomplete,
+	Button,
+	CircularProgress,
+	InputAdornment,
+	MenuItem,
+	Paper,
+	TextField,
+	Typography
+} from '@mui/material';
 import FusePageSimple from '@fuse/core/FusePageSimple';
 import AuthGuardRedirect from '@auth/AuthGuardRedirect';
 import authRoles from '@auth/authRoles';
 import FuseSvgIcon from '@fuse/core/FuseSvgIcon';
+import {
+	CURRENCY,
+	FeeRecordsResponse,
+	FeeRow,
+	PAYMENT_METHOD_LABELS,
+	backendRequest,
+	formatKES,
+	useBackend
+} from '@/lib/finance';
 
 const paymentSchema = z.object({
 	studentId: z.string().min(1, 'Please select a student'),
-	amount: z.coerce.number().positive('Amount must be positive'),
-	method: z.enum(['CASH', 'BANK']),
-	receiptNumber: z.string().min(1, 'Receipt number is required')
+	amount: z.coerce.number().positive('Amount must be more than zero'),
+	method: z.enum(['CASH', 'BANK', 'MPESA']),
+	receiptNumber: z.string().trim().min(1, 'Receipt / reference number is required')
 });
 
 type PaymentFormData = z.infer<typeof paymentSchema>;
 
-export default function RecordPaymentPage() {
-	const { data: session } = useSession();
-	const token = (session as any)?.backendToken;
+const referenceHint: Record<PaymentFormData['method'], string> = {
+	CASH: 'Number on the school receipt book',
+	BANK: 'Bank slip or transfer reference',
+	MPESA: 'M-Pesa confirmation code, e.g. QJK3XXXXXX'
+};
 
-	const [submitStatus, setSubmitStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
-	const [errorMessage, setErrorMessage] = useState('');
+function RecordPaymentForm() {
+	const preselectedId = useSearchParams()?.get('studentId') ?? '';
+	const { data, error: loadError, loading, reload, token } = useBackend<FeeRecordsResponse>('/api/finance/records');
+	const students = useMemo(() => data?.rows ?? [], [data]);
 
-	// Mock list of students - in a real app, this would be fetched from the backend
-	const mockStudents = [
-		{ id: 'student-1', name: 'Alice Johnson (Grade 10)' },
-		{ id: 'student-2', name: 'Bob Smith (Grade 11)' },
-		{ id: 'student-3', name: 'Charlie Davis (Grade 9)' },
-		{ id: 'student-4', name: 'Diana Prince (Grade 12)' }
-	];
+	const [submitting, setSubmitting] = useState(false);
+	const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
 
 	const {
 		control,
 		handleSubmit,
 		reset,
+		watch,
+		setValue,
 		formState: { errors }
 	} = useForm<PaymentFormData>({
 		resolver: zodResolver(paymentSchema),
 		defaultValues: {
-			studentId: '',
-			amount: 0,
+			studentId: preselectedId,
+			amount: '' as unknown as number,
 			method: 'CASH',
 			receiptNumber: ''
 		}
 	});
 
-	const onSubmit = async (data: PaymentFormData) => {
+	const studentId = watch('studentId');
+	const method = watch('method');
+	const selectedStudent = useMemo(
+		() => students.find((s) => s.studentId === studentId) ?? null,
+		[students, studentId]
+	);
+
+	const onSubmit = async (form: PaymentFormData) => {
 		if (!token) return;
 
-		setSubmitStatus('loading');
-
+		setSubmitting(true);
+		setResult(null);
 		try {
-			const response = await fetch('http://localhost:4000/api/fees/manual-payment', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					Authorization: `Bearer ${token}`
-				},
-				body: JSON.stringify(data)
+			await backendRequest(token, '/api/fees/manual-payment', { method: 'POST', body: JSON.stringify(form) });
+			const name = selectedStudent?.studentName ?? 'the student';
+			setResult({
+				ok: true,
+				message: `Recorded ${formatKES(form.amount)} for ${name}. It clears the oldest balance first.`
 			});
-
-			if (!response.ok) {
-				throw new Error('Failed to record payment');
-			}
-
-			setSubmitStatus('success');
-			reset(); // clear form
-
-			// hide success message after 3 seconds
-			setTimeout(() => setSubmitStatus('idle'), 3000);
-		} catch (err: any) {
-			console.error(err);
-			setErrorMessage(err.message || 'An error occurred while submitting payment');
-			setSubmitStatus('error');
+			reset({
+				studentId: '',
+				amount: '' as unknown as number,
+				method: form.method,
+				receiptNumber: ''
+			});
+			reload(); // refresh balances
+		} catch (e) {
+			setResult({ ok: false, message: (e as Error).message });
+		} finally {
+			setSubmitting(false);
 		}
 	};
 
-	const renderContent = () => (
-		<>
-			<Typography className="text-4xl font-extrabold tracking-tight">Record Manual Payment</Typography>
-
-			<Paper className="bg-card mt-32 flex flex-auto flex-col rounded-2xl p-24 shadow">
-				{submitStatus === 'success' && (
+	return (
+		<div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+			<Paper className="rounded-2xl p-6 shadow-sm lg:col-span-2">
+				{result && (
 					<Alert
-						severity="success"
-						className="mb-24"
+						severity={result.ok ? 'success' : 'error'}
+						className="mb-6"
+						onClose={() => setResult(null)}
 					>
-						Payment recorded successfully!
+						{result.message}
 					</Alert>
 				)}
-
-				{submitStatus === 'error' && (
+				{loadError && (
 					<Alert
 						severity="error"
-						className="mb-24"
+						className="mb-6"
+						action={<Button onClick={reload}>Retry</Button>}
 					>
-						{errorMessage}
+						Couldn't load students: {loadError}
 					</Alert>
 				)}
 
 				<form
 					onSubmit={handleSubmit(onSubmit)}
-					className="flex flex-col gap-24"
+					className="flex flex-col gap-5"
+					noValidate
 				>
 					<Controller
 						name="studentId"
 						control={control}
 						render={({ field }) => (
-							<TextField
-								{...field}
-								select
-								label="Student"
-								fullWidth
-								error={!!errors.studentId}
-								helperText={errors.studentId?.message}
-								disabled={submitStatus === 'loading'}
-							>
-								{mockStudents.map((option) => (
-									<MenuItem
-										key={option.id}
-										value={option.id}
+							<Autocomplete<FeeRow>
+								options={students}
+								loading={loading}
+								value={selectedStudent}
+								onChange={(_, v) => field.onChange(v?.studentId ?? '')}
+								getOptionLabel={(s) =>
+									[s.studentName, s.admissionNumber, s.className].filter(Boolean).join(' · ')
+								}
+								isOptionEqualToValue={(a, b) => a.studentId === b.studentId}
+								renderOption={(props, s) => (
+									<li
+										{...props}
+										key={s.studentId}
 									>
-										{option.name}
-									</MenuItem>
-								))}
-							</TextField>
-						)}
-					/>
-
-					<Controller
-						name="amount"
-						control={control}
-						render={({ field }) => (
-							<TextField
-								{...field}
-								type="number"
-								label="Amount"
-								fullWidth
-								error={!!errors.amount}
-								helperText={errors.amount?.message}
-								disabled={submitStatus === 'loading'}
-								slotProps={{
-									input: {
-										startAdornment: <InputAdornment position="start">$</InputAdornment>
-									}
-								}}
+										<div className="flex w-full items-center justify-between gap-4">
+											<span>
+												{s.studentName}
+												<span className="text-gray-500">
+													{' '}
+													{[s.admissionNumber, s.className].filter(Boolean).join(' · ')}
+												</span>
+											</span>
+											{s.balance > 0 && (
+												<span className="text-sm font-semibold text-red-600">
+													{formatKES(s.balance)}
+												</span>
+											)}
+										</div>
+									</li>
+								)}
+								disabled={submitting}
+								renderInput={(params) => (
+									<TextField
+										{...params}
+										label="Student"
+										placeholder="Search by name or admission number"
+										error={!!errors.studentId}
+										helperText={errors.studentId?.message}
+									/>
+								)}
 							/>
 						)}
 					/>
 
-					<Controller
-						name="method"
-						control={control}
-						render={({ field }) => (
-							<TextField
-								{...field}
-								select
-								label="Payment Method"
-								fullWidth
-								error={!!errors.method}
-								helperText={errors.method?.message}
-								disabled={submitStatus === 'loading'}
-							>
-								<MenuItem value="CASH">Cash</MenuItem>
-								<MenuItem value="BANK">Bank Transfer</MenuItem>
-							</TextField>
-						)}
-					/>
+					<div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+						<Controller
+							name="amount"
+							control={control}
+							render={({ field }) => (
+								<TextField
+									{...field}
+									type="number"
+									label="Amount"
+									fullWidth
+									error={!!errors.amount}
+									helperText={errors.amount?.message}
+									disabled={submitting}
+									slotProps={{
+										input: {
+											startAdornment: <InputAdornment position="start">{CURRENCY}</InputAdornment>
+										},
+										htmlInput: { min: 1, step: 'any' }
+									}}
+								/>
+							)}
+						/>
 
-					<Controller
-						name="receiptNumber"
-						control={control}
-						render={({ field }) => (
-							<TextField
-								{...field}
-								label="Receipt / Reference Number"
-								fullWidth
-								error={!!errors.receiptNumber}
-								helperText={errors.receiptNumber?.message}
-								disabled={submitStatus === 'loading'}
-							/>
-						)}
-					/>
+						<Typography className="self-center text-sm text-gray-500">
+							Payments clear the oldest outstanding term first; any balance left carries forward.
+						</Typography>
+					</div>
 
-					<div className="mt-16 flex justify-end">
+					<div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+						<Controller
+							name="method"
+							control={control}
+							render={({ field }) => (
+								<TextField
+									{...field}
+									select
+									label="Payment method"
+									fullWidth
+									disabled={submitting}
+								>
+									{Object.entries(PAYMENT_METHOD_LABELS).map(([value, label]) => (
+										<MenuItem
+											key={value}
+											value={value}
+										>
+											{label}
+										</MenuItem>
+									))}
+								</TextField>
+							)}
+						/>
+
+						<Controller
+							name="receiptNumber"
+							control={control}
+							render={({ field }) => (
+								<TextField
+									{...field}
+									label="Receipt / reference number"
+									fullWidth
+									error={!!errors.receiptNumber}
+									helperText={errors.receiptNumber?.message ?? referenceHint[method]}
+									disabled={submitting}
+								/>
+							)}
+						/>
+					</div>
+
+					<div className="flex justify-end">
 						<Button
 							type="submit"
 							variant="contained"
 							color="secondary"
 							size="large"
-							disabled={submitStatus === 'loading'}
+							disabled={submitting || !data}
 							startIcon={
-								submitStatus === 'loading' ? (
-									<CircularProgress size={20} />
+								submitting ? (
+									<CircularProgress size={18} />
 								) : (
-									<FuseSvgIcon>lucide:save</FuseSvgIcon>
+									<FuseSvgIcon size={18}>lucide:save</FuseSvgIcon>
 								)
 							}
 						>
-							Record Payment
+							Record payment
 						</Button>
 					</div>
 				</form>
 			</Paper>
-		</>
-	);
 
+			<Paper className="flex flex-col gap-4 self-start rounded-2xl p-6 shadow-sm">
+				<Typography className="text-lg font-semibold">Student balance</Typography>
+				{selectedStudent ? (
+					<>
+						<div>
+							<Typography className="font-semibold">{selectedStudent.studentName}</Typography>
+							<Typography className="text-sm text-gray-500">
+								{[selectedStudent.admissionNumber, selectedStudent.className]
+									.filter(Boolean)
+									.join(' · ') || '—'}
+							</Typography>
+						</div>
+						<div className="flex flex-col gap-2 text-sm">
+							<div className="flex justify-between">
+								<span className="text-gray-500">Total billed</span>
+								<span>{formatKES(selectedStudent.totalBilled)}</span>
+							</div>
+							<div className="flex justify-between">
+								<span className="text-gray-500">Total paid</span>
+								<span className="text-green-600">{formatKES(selectedStudent.amountPaid)}</span>
+							</div>
+							<div className="flex justify-between border-t border-gray-100 pt-2 font-bold">
+								<span>Balance</span>
+								<span className={selectedStudent.balance > 0 ? 'text-red-600' : ''}>
+									{formatKES(Math.max(0, selectedStudent.balance))}
+								</span>
+							</div>
+						</div>
+						{selectedStudent.balance > 0 && (
+							<Button
+								variant="outlined"
+								size="small"
+								onClick={() => setValue('amount', selectedStudent.balance, { shouldValidate: true })}
+							>
+								Pay full balance
+							</Button>
+						)}
+					</>
+				) : (
+					<Typography className="text-sm text-gray-500">Select a student to see what they owe.</Typography>
+				)}
+			</Paper>
+		</div>
+	);
+}
+
+export default function RecordPaymentPage() {
 	return (
 		<AuthGuardRedirect auth={authRoles.finance}>
 			<FusePageSimple
 				content={
-					<div className="mx-auto flex w-full max-w-7xl flex-col gap-32 px-24 py-32">{renderContent()}</div>
+					<div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 sm:py-8">
+						<div className="flex flex-wrap items-end justify-between gap-4">
+							<div>
+								<Typography className="text-3xl font-extrabold tracking-tight">
+									Record Payment
+								</Typography>
+								<Typography className="mt-1 text-sm text-gray-500">
+									Log cash, bank or M-Pesa payments received outside the portal.
+								</Typography>
+							</div>
+							<Button
+								component={Link}
+								href="/finance/fee-records"
+								startIcon={<FuseSvgIcon size={18}>lucide:arrow-left</FuseSvgIcon>}
+							>
+								Fee records
+							</Button>
+						</div>
+						<Suspense fallback={<CircularProgress />}>
+							<RecordPaymentForm />
+						</Suspense>
+					</div>
 				}
 			/>
 		</AuthGuardRedirect>

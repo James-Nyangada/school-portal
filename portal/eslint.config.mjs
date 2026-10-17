@@ -21,6 +21,7 @@ export default tseslint.config({
     ignores: [
         '**/utils/node-scripts/fuse-react-message.js',
         '**/components/tiptap/**',
+        '**/lib/timetable-core/**',
         '**/.next/**',
     ],
     languageOptions: {

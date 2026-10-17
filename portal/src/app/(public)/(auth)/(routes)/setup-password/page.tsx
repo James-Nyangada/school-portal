@@ -6,6 +6,7 @@ import { Paper, Typography, TextField, Button, Alert } from '@mui/material';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
+import { BACKEND_URL } from '@/lib/backend';
 
 const schema = z
 	.object({
@@ -39,7 +40,7 @@ export default function SetupPassword() {
 		setIsLoading(true);
 		setError(null);
 		try {
-			const res = await fetch('http://localhost:4000/api/auth/password/change-password', {
+			const res = await fetch(`${BACKEND_URL}/api/auth/password/change-password`, {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',

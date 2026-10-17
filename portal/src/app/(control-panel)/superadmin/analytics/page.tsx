@@ -26,6 +26,7 @@ import {
 	Cell,
 	Legend
 } from 'recharts';
+import { BACKEND_URL } from '@/lib/backend';
 
 /* ─── Mock / Fallback Data ─── */
 const MOCK_SUMMARY = {
@@ -130,8 +131,12 @@ export default function SuperAdminAnalytics() {
 		const load = async () => {
 			// Summary
 			try {
-				const d = await fetchEndpoint('http://localhost:4000/api/analytics/summary');
-				setSummary(d);
+				const d = await fetchEndpoint(`${BACKEND_URL}/api/analytics/summary`);
+				setSummary({
+					...d,
+					attendanceRate: d.attendanceRate ?? d.overallAttendanceRate,
+					feeCollectionRate: d.feeCollectionRate ?? d.collectionRate
+				});
 			} catch {
 				anyFailed = true;
 				setSummary(MOCK_SUMMARY);
@@ -139,7 +144,7 @@ export default function SuperAdminAnalytics() {
 
 			// Performance
 			try {
-				const d = await fetchEndpoint('http://localhost:4000/api/analytics/performance');
+				const d = await fetchEndpoint(`${BACKEND_URL}/api/analytics/performance`);
 				setPerformance(Array.isArray(d) ? d : d.subjects || d.data || []);
 			} catch {
 				anyFailed = true;
@@ -148,8 +153,20 @@ export default function SuperAdminAnalytics() {
 
 			// Attendance
 			try {
-				const d = await fetchEndpoint('http://localhost:4000/api/analytics/attendance');
-				setAttendance(d);
+				const d = await fetchEndpoint(`${BACKEND_URL}/api/analytics/attendance`);
+				// Server sends heatmapData / dayOfWeekSummary; the charts read daily / byDay
+				setAttendance({
+					daily: (d.heatmapData ?? []).slice(-30).map((x: { date: string; rate: number }) => ({
+						date: new Date(x.date)
+							.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' })
+							.replace(',', ''),
+						rate: x.rate
+					})),
+					byDay: (d.dayOfWeekSummary ?? []).map((x: { day: string; rate: number }) => ({
+						day: x.day.slice(0, 3),
+						rate: x.rate
+					}))
+				});
 			} catch {
 				anyFailed = true;
 				setAttendance(MOCK_ATTENDANCE);
@@ -157,7 +174,7 @@ export default function SuperAdminAnalytics() {
 
 			// Fees
 			try {
-				const d = await fetchEndpoint('http://localhost:4000/api/analytics/fees');
+				const d = await fetchEndpoint(`${BACKEND_URL}/api/analytics/fees`);
 				setFees(d);
 			} catch {
 				anyFailed = true;
@@ -276,7 +293,7 @@ export default function SuperAdminAnalytics() {
 								size={32}
 								sx={{ color: '#fff' }}
 							>
-								lucide:bar-chart-3
+								lucide:chart-column
 							</FuseSvgIcon>
 							<Box>
 								<Typography
@@ -571,7 +588,7 @@ export default function SuperAdminAnalytics() {
 												dataKey="date"
 												tick={{ fontSize: 11 }}
 											/>
-											<YAxis domain={[60, 100]} />
+											<YAxis domain={[0, 100]} />
 											<Tooltip
 												contentStyle={{ borderRadius: 8 }}
 												formatter={(v: number) => [`${v}%`, 'Attendance']}
@@ -616,7 +633,7 @@ export default function SuperAdminAnalytics() {
 												dataKey="day"
 												tick={{ fontSize: 12 }}
 											/>
-											<YAxis domain={[70, 100]} />
+											<YAxis domain={[0, 100]} />
 											<Tooltip formatter={(v: number) => [`${v}%`, 'Avg Rate']} />
 											<Bar
 												dataKey="rate"

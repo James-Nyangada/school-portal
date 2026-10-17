@@ -129,10 +129,42 @@ const navigationConfig: FuseNavItemType[] = [
 				auth: ['SUPER_ADMIN', 'ADMIN']
 			},
 			{
+				id: 'admin-substitutions',
+				title: 'Substitutions',
+				type: 'item',
+				icon: 'lucide:user-x',
+				url: '/admin/timetable/substitutions',
+				auth: ['SUPER_ADMIN', 'ADMIN']
+			},
+			{
+				id: 'admin-gradebook',
+				title: 'Gradebook',
+				type: 'item',
+				icon: 'lucide:notebook-pen',
+				url: '/teacher/gradebook',
+				auth: ['ADMIN']
+			},
+			{
+				id: 'admin-fee-structures',
+				title: 'Fee Structures',
+				type: 'item',
+				icon: 'lucide:receipt',
+				url: '/admin/fee-structures',
+				auth: ['SUPER_ADMIN', 'ADMIN']
+			},
+			{
+				id: 'admin-clearance',
+				title: "Leavers' Clearance",
+				type: 'item',
+				icon: 'lucide:badge-check',
+				url: '/admin/clearance',
+				auth: ['SUPER_ADMIN', 'ADMIN']
+			},
+			{
 				id: 'admin-grade-approvals',
 				title: 'Grade Approvals',
 				type: 'item',
-				icon: 'lucide:check-circle',
+				icon: 'lucide:circle-check',
 				url: '/admin/grade-approvals',
 				auth: ['SUPER_ADMIN', 'ADMIN']
 			},
@@ -140,7 +172,7 @@ const navigationConfig: FuseNavItemType[] = [
 				id: 'admin-analytics',
 				title: 'Analytics',
 				type: 'item',
-				icon: 'lucide:bar-chart-3',
+				icon: 'lucide:chart-column',
 				url: '/admin/analytics',
 				auth: ['SUPER_ADMIN', 'ADMIN']
 			},
@@ -151,6 +183,14 @@ const navigationConfig: FuseNavItemType[] = [
 				icon: 'lucide:mail',
 				url: '/admin/newsletter',
 				auth: ['SUPER_ADMIN', 'ADMIN']
+			},
+			{
+				id: 'admin-settings',
+				title: 'School Settings',
+				type: 'item',
+				icon: 'lucide:settings',
+				url: '/admin/settings',
+				auth: ['ADMIN']
 			}
 		]
 	},
@@ -170,6 +210,22 @@ const navigationConfig: FuseNavItemType[] = [
 				icon: 'lucide:layout-dashboard',
 				url: '/teacher/dashboard',
 				auth: ['SUPER_ADMIN', 'TEACHER']
+			},
+			{
+				id: 'teacher-messages',
+				title: 'Messages',
+				type: 'item',
+				icon: 'lucide:mail',
+				url: '/teacher/messages',
+				auth: ['TEACHER']
+			},
+			{
+				id: 'teacher-classroom',
+				title: 'My Classroom',
+				type: 'item',
+				icon: 'lucide:school',
+				url: '/teacher/classroom',
+				auth: ['TEACHER']
 			},
 			{
 				id: 'teacher-timetable',
@@ -220,7 +276,7 @@ const navigationConfig: FuseNavItemType[] = [
 		title: 'Finance',
 		type: 'group',
 		icon: 'lucide:wallet',
-		auth: ['SUPER_ADMIN', 'FINANCE'],
+		auth: ['SUPER_ADMIN', 'ADMIN', 'FINANCE'],
 		children: [
 			{
 				id: 'finance-overview',
@@ -228,7 +284,7 @@ const navigationConfig: FuseNavItemType[] = [
 				type: 'item',
 				icon: 'lucide:layout-dashboard',
 				url: '/finance/dashboard',
-				auth: ['SUPER_ADMIN', 'FINANCE']
+				auth: ['SUPER_ADMIN', 'ADMIN', 'FINANCE']
 			},
 			{
 				id: 'finance-fee-records',
@@ -236,7 +292,23 @@ const navigationConfig: FuseNavItemType[] = [
 				type: 'item',
 				icon: 'lucide:receipt',
 				url: '/finance/fee-records',
-				auth: ['SUPER_ADMIN', 'FINANCE']
+				auth: ['SUPER_ADMIN', 'ADMIN', 'FINANCE']
+			},
+			{
+				id: 'finance-fee-structures',
+				title: 'Fee Structures',
+				type: 'item',
+				icon: 'lucide:list-ordered',
+				url: '/admin/fee-structures',
+				auth: ['FINANCE']
+			},
+			{
+				id: 'finance-billing',
+				title: 'Bill Adjustments',
+				type: 'item',
+				icon: 'lucide:file-plus',
+				url: '/finance/billing',
+				auth: ['SUPER_ADMIN', 'ADMIN', 'FINANCE']
 			},
 			{
 				id: 'finance-record-payment',
@@ -244,15 +316,39 @@ const navigationConfig: FuseNavItemType[] = [
 				type: 'item',
 				icon: 'lucide:circle-plus',
 				url: '/finance/record-payment',
-				auth: ['SUPER_ADMIN', 'FINANCE']
+				auth: ['SUPER_ADMIN', 'ADMIN', 'FINANCE']
+			},
+			{
+				id: 'finance-bank-payments',
+				title: 'Bank Payments',
+				type: 'item',
+				icon: 'lucide:landmark',
+				url: '/finance/bank-payments',
+				auth: ['SUPER_ADMIN', 'ADMIN', 'FINANCE']
+			},
+			{
+				id: 'finance-paybill-payments',
+				title: 'Paybill Payments',
+				type: 'item',
+				icon: 'lucide:smartphone',
+				url: '/finance/paybill-payments',
+				auth: ['SUPER_ADMIN', 'ADMIN', 'FINANCE']
+			},
+			{
+				id: 'finance-payment-plans',
+				title: 'Payment Plans',
+				type: 'item',
+				icon: 'lucide:calendar-clock',
+				url: '/finance/payment-plans',
+				auth: ['SUPER_ADMIN', 'ADMIN', 'FINANCE']
 			},
 			{
 				id: 'finance-reports',
 				title: 'Reports',
 				type: 'item',
-				icon: 'lucide:file-bar-chart',
+				icon: 'lucide:file-chart-column',
 				url: '/finance/reports',
-				auth: ['SUPER_ADMIN', 'FINANCE']
+				auth: ['SUPER_ADMIN', 'ADMIN', 'FINANCE']
 			}
 		]
 	},
@@ -274,6 +370,14 @@ const navigationConfig: FuseNavItemType[] = [
 				auth: ['SUPER_ADMIN', 'PARENT']
 			},
 			{
+				id: 'parent-messages',
+				title: 'Messages',
+				type: 'item',
+				icon: 'lucide:mail',
+				url: '/parent/messages',
+				auth: ['PARENT']
+			},
+			{
 				id: 'parent-fees',
 				title: 'Fees & Payment',
 				type: 'item',
@@ -287,6 +391,14 @@ const navigationConfig: FuseNavItemType[] = [
 				type: 'item',
 				icon: 'lucide:graduation-cap',
 				url: '/parent/grades',
+				auth: ['SUPER_ADMIN', 'PARENT']
+			},
+			{
+				id: 'parent-report-cards',
+				title: 'Report Cards',
+				type: 'item',
+				icon: 'lucide:file-text',
+				url: '/parent/report-cards',
 				auth: ['SUPER_ADMIN', 'PARENT']
 			},
 			{
@@ -333,11 +445,27 @@ const navigationConfig: FuseNavItemType[] = [
 				auth: ['SUPER_ADMIN', 'STUDENT']
 			},
 			{
+				id: 'student-messages',
+				title: 'Messages',
+				type: 'item',
+				icon: 'lucide:mail',
+				url: '/student/messages',
+				auth: ['STUDENT']
+			},
+			{
 				id: 'student-grades',
 				title: 'Grades',
 				type: 'item',
 				icon: 'lucide:graduation-cap',
 				url: '/student/grades',
+				auth: ['SUPER_ADMIN', 'STUDENT']
+			},
+			{
+				id: 'student-report-cards',
+				title: 'Report Cards',
+				type: 'item',
+				icon: 'lucide:file-text',
+				url: '/student/report-cards',
 				auth: ['SUPER_ADMIN', 'STUDENT']
 			},
 			{

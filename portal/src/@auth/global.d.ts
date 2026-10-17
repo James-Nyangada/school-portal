@@ -4,6 +4,8 @@ declare module 'next-auth' {
 	interface Session {
 		accessToken?: string;
 		backendToken?: string;
+		/** Set while a Super Admin is viewing the portal as this user */
+		viewAs?: { superAdminName: string } | null;
 		db?: User;
 		user: {
 			name?: string | null;

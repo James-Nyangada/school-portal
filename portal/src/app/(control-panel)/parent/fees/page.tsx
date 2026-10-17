@@ -1,278 +1,228 @@
 'use client';
 
-import { useState } from 'react';
-import Typography from '@mui/material/Typography';
-import Paper from '@mui/material/Paper';
-import Button from '@mui/material/Button';
-import TextField from '@mui/material/TextField';
-import Divider from '@mui/material/Divider';
-import LinearProgress from '@mui/material/LinearProgress';
-import InputAdornment from '@mui/material/InputAdornment';
+import { useEffect, useState } from 'react';
+import { Alert, Button, Chip, CircularProgress, MenuItem, Paper, TextField, Typography } from '@mui/material';
 import FusePageSimple from '@fuse/core/FusePageSimple';
 import AuthGuardRedirect from '@auth/AuthGuardRedirect';
 import FuseSvgIcon from '@fuse/core/FuseSvgIcon';
-import { useSnackbar } from 'notistack';
+import PayFees from '@/components/fees/PayFees';
+import FeeStatementView, { FeeLockStatus } from '@/components/fees/FeeStatementView';
+import PaymentPlanCard from '@/components/fees/PaymentPlanCard';
+import { BankClaim, CLAIM_STATUS, PaymentOptions, StudentFees, formatDate, formatKES, useBackend } from '@/lib/finance';
+
+type Me = {
+	phone: string | null;
+	parentLinks: {
+		student: {
+			id: string;
+			firstName: string | null;
+			lastName: string | null;
+			admissionNumber: string | null;
+			class: { name: string } | null;
+		};
+	}[];
+};
+
+const CHILD_KEY = 'parent_selected_child_id';
 
 export default function ParentFeesPage() {
-	const { enqueueSnackbar } = useSnackbar();
-	const [amount, setAmount] = useState('');
-	const [phone, setPhone] = useState('');
-	const [isProcessing, setIsProcessing] = useState(false);
+	const me = useBackend<Me>('/api/users/me');
+	const options = useBackend<PaymentOptions>('/api/fees/payment-options');
+	const children = (me.data?.parentLinks ?? []).map((l) => l.student);
+	const [childId, setChildId] = useState('');
 
-	// Mock fee data
-	const feeStatement = {
-		term: 'Term 1, 2026',
-		items: [
-			{ name: 'Tuition Fee', amount: 30000 },
-			{ name: 'Transport & Shuttle', amount: 15000 },
-			{ name: 'Lunch Program', amount: 8000 }
-		],
-		totalBilled: 53000,
-		amountPaid: 20000,
-		balance: 33000
+	useEffect(() => {
+		if (!me.data || childId) return;
+
+		let saved: string | null = null;
+		try {
+			saved = localStorage.getItem(CHILD_KEY);
+		} catch {
+			// storage unavailable
+		}
+		const list = me.data.parentLinks.map((l) => l.student);
+		setChildId(list.find((c) => c.id === saved)?.id ?? list[0]?.id ?? '');
+	}, [me.data, childId]);
+
+	const choose = (id: string) => {
+		setChildId(id);
+		try {
+			localStorage.setItem(CHILD_KEY, id);
+		} catch {
+			// storage unavailable
+		}
 	};
 
-	const percentPaid = feeStatement.totalBilled > 0 ? (feeStatement.amountPaid / feeStatement.totalBilled) * 100 : 100;
+	const fees = useBackend<StudentFees>(childId ? `/api/fees/student/${childId}` : null);
+	const claims = useBackend<{ claims: BankClaim[] }>(childId ? `/api/fees/bank-claims?studentId=${childId}` : null);
+	const child = children.find((c) => c.id === childId);
 
-	const handleMpesaPay = async () => {
-		if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
-			enqueueSnackbar('Please enter a valid amount', { variant: 'error' });
-			return;
+	const refresh = () => {
+		fees.reload();
+		claims.reload();
+	};
+
+	const loadError = me.error || options.error;
+	const balance = Math.max(0, fees.data?.balance ?? 0);
+	const pendingClaims = (claims.data?.claims ?? []).filter((c) => c.status === 'PENDING');
+
+	const renderContent = () => {
+		if (me.loading || options.loading) {
+			return (
+				<div className="flex min-h-[300px] items-center justify-center">
+					<CircularProgress />
+				</div>
+			);
 		}
 
-		setIsProcessing(true);
-		// Simulate STK push delay
-		setTimeout(() => {
-			setIsProcessing(false);
-			enqueueSnackbar('STK Push sent to your phone! Please enter your M-Pesa PIN.', { variant: 'success' });
-			setAmount('');
-			setPhone('');
-		}, 1500);
+		if (loadError) return <Alert severity="error">{loadError}</Alert>;
+
+		if (children.length === 0) {
+			return (
+				<Typography color="text.secondary">
+					No children are linked to this account yet. Please contact the school office.
+				</Typography>
+			);
+		}
+
+		return (
+			<div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
+				{/* Statement */}
+				<div className="flex flex-col gap-6 lg:col-span-3">
+					{fees.loading && !fees.data ? (
+						<div className="flex justify-center py-12">
+							<CircularProgress />
+						</div>
+					) : fees.error ? (
+						<Alert severity="error">{fees.error}</Alert>
+					) : (
+						fees.data && (
+							<>
+								<FeeLockStatus statement={fees.data.statement} />
+								{fees.data.paymentPlan && <PaymentPlanCard schedule={fees.data.paymentPlan} />}
+								<FeeStatementView
+									statement={fees.data.statement}
+									token={me.token!}
+								/>
+							</>
+						)
+					)}
+
+					{(claims.data?.claims.length ?? 0) > 0 && (
+						<Paper className="rounded-2xl p-6 shadow-sm">
+							<Typography className="mb-3 text-lg font-bold">Bank payments you reported</Typography>
+							<div className="flex flex-col gap-2">
+								{claims.data!.claims.map((c) => (
+									<div
+										key={c.id}
+										className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-100 p-3"
+									>
+										<div>
+											<Typography className="font-semibold">
+												{formatKES(c.amount)} · {c.transactionCode}
+											</Typography>
+											<Typography className="text-xs text-gray-500">
+												Paid {formatDate(c.paidAt)}
+												{c.bankName ? ` · ${c.bankName}` : ''}
+											</Typography>
+											{c.status === 'REJECTED' && c.rejectionReason && (
+												<Typography className="mt-1 text-xs text-red-600">
+													{c.rejectionReason}
+												</Typography>
+											)}
+										</div>
+										<Chip
+											size="small"
+											label={CLAIM_STATUS[c.status].label}
+											color={CLAIM_STATUS[c.status].color}
+										/>
+									</div>
+								))}
+							</div>
+						</Paper>
+					)}
+				</div>
+
+				{/* Pay */}
+				<Paper className="self-start rounded-2xl p-6 shadow-sm lg:col-span-2">
+					<Typography className="mb-1 text-lg font-bold">Pay school fees</Typography>
+					<Typography className="mb-4 text-sm text-gray-500">
+						For {child ? [child.firstName, child.lastName].filter(Boolean).join(' ') : 'your child'}
+					</Typography>
+					{pendingClaims.length > 0 && (
+						<Alert
+							severity="info"
+							className="mb-4"
+						>
+							{formatKES(pendingClaims.reduce((a, c) => a + c.amount, 0))} in bank payments is awaiting
+							verification and isn't in the balance yet.
+						</Alert>
+					)}
+					{options.data && me.data && child && fees.data && (
+						<PayFees
+							token={me.token!}
+							studentId={child.id}
+							studentLabel={[child.firstName, child.lastName].filter(Boolean).join(' ')}
+							admissionNumber={child.admissionNumber}
+							balance={balance}
+							options={options.data}
+							defaultPhone={me.data.phone}
+							onDone={refresh}
+						/>
+					)}
+				</Paper>
+			</div>
+		);
 	};
 
 	return (
-		<AuthGuardRedirect auth={['PARENT', 'STUDENT']}>
+		<AuthGuardRedirect auth={['PARENT']}>
 			<FusePageSimple
 				content={
-					<div className="mx-auto flex w-full max-w-7xl flex-col gap-32 px-24 py-32">
-						{/* Header */}
-						<div className="flex flex-col items-start justify-between gap-16 border-b border-gray-100 pb-16 md:flex-row md:items-center">
+					<div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 sm:py-8">
+						<div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
 							<div>
-								<Typography className="text-4xl font-extrabold tracking-tight">
+								<Typography className="text-3xl font-extrabold tracking-tight">
 									Fees & Payments
 								</Typography>
 								<Typography
 									color="text.secondary"
-									className="mt-8"
+									className="mt-1"
 								>
-									Manage school tuition billing, view statement details, and clear balances instantly
-									via M-Pesa.
+									Pay by M-Pesa, or report a bank deposit with its transaction code.
 								</Typography>
 							</div>
-							<div className="flex shrink-0 items-center gap-8 rounded-full bg-blue-50 px-16 py-8 text-sm font-bold text-blue-700">
-								<FuseSvgIcon size={20}>lucide:credit-card</FuseSvgIcon>
-								<span>Term Balance Active</span>
+							<div className="flex items-center gap-3">
+								{children.length > 1 && (
+									<TextField
+										select
+										size="small"
+										label="Child"
+										value={childId}
+										onChange={(e) => choose(e.target.value)}
+										className="min-w-48"
+									>
+										{children.map((c) => (
+											<MenuItem
+												key={c.id}
+												value={c.id}
+											>
+												{[c.firstName, c.lastName].filter(Boolean).join(' ')}
+												{c.class ? ` (${c.class.name})` : ''}
+											</MenuItem>
+										))}
+									</TextField>
+								)}
+								<Button
+									onClick={refresh}
+									startIcon={<FuseSvgIcon size={18}>lucide:refresh-cw</FuseSvgIcon>}
+									disabled={!childId}
+								>
+									Refresh
+								</Button>
 							</div>
 						</div>
-
-						{/* Grid Layout */}
-						<div className="grid grid-cols-1 gap-32 md:grid-cols-2">
-							{/* Fee Statement Card */}
-							<Paper
-								className="bg-card flex flex-auto flex-col rounded-2xl p-24 shadow"
-								elevation={0}
-							>
-								<div>
-									<div className="mb-24 flex items-center justify-between">
-										<Typography
-											variant="h6"
-											className="font-bold text-slate-800"
-										>
-											Fee Statement
-										</Typography>
-										<span className="rounded-full bg-slate-100 px-12 py-4 text-xs font-semibold text-slate-700">
-											{feeStatement.term}
-										</span>
-									</div>
-
-									{/* Fee Items List */}
-									<div className="mb-24 flex flex-col gap-16">
-										{feeStatement.items.map((item, index) => (
-											<div
-												key={index}
-												className="flex items-center justify-between rounded-xl p-12 transition-colors duration-150 hover:bg-slate-50/50"
-											>
-												<div className="flex items-center gap-12">
-													<div className="rounded-lg bg-slate-100 p-8 text-slate-600">
-														<FuseSvgIcon size={16}>lucide:book-open</FuseSvgIcon>
-													</div>
-													<Typography
-														color="text.secondary"
-														className="text-sm font-medium"
-													>
-														{item.name}
-													</Typography>
-												</div>
-												<Typography className="font-bold text-slate-800">
-													KES {item.amount.toLocaleString()}
-												</Typography>
-											</div>
-										))}
-									</div>
-
-									<Divider className="my-16" />
-
-									{/* Progress Metrics */}
-									<div className="mb-24">
-										<div className="mb-8 flex items-center justify-between text-xs font-bold text-slate-500">
-											<span>FEES CLEARED</span>
-											<span>{Math.round(percentPaid)}%</span>
-										</div>
-										<LinearProgress
-											variant="determinate"
-											value={percentPaid}
-											className="h-8 rounded-full bg-slate-100"
-											color={percentPaid >= 50 ? 'success' : 'warning'}
-										/>
-									</div>
-								</div>
-
-								{/* Totals Summary */}
-								<div className="flex flex-col gap-12 rounded-2xl border border-slate-100 bg-slate-50/60 p-20">
-									<div className="flex items-center justify-between text-sm font-semibold">
-										<Typography color="text.secondary">Total Billed</Typography>
-										<Typography className="font-bold text-slate-700">
-											KES {feeStatement.totalBilled.toLocaleString()}
-										</Typography>
-									</div>
-									<div className="flex items-center justify-between text-sm font-semibold text-green-700">
-										<Typography>Amount Paid</Typography>
-										<Typography className="font-extrabold">
-											- KES {feeStatement.amountPaid.toLocaleString()}
-										</Typography>
-									</div>
-									<Divider className="my-8" />
-									<div className="flex items-center justify-between">
-										<Typography className="font-bold text-slate-800">Balance Due</Typography>
-										<Typography
-											variant="h6"
-											color="error"
-											className="font-black"
-										>
-											KES {feeStatement.balance.toLocaleString()}
-										</Typography>
-									</div>
-								</div>
-							</Paper>
-
-							{/* M-Pesa Payment Gate Card */}
-							<Paper
-								className="bg-card flex flex-auto flex-col rounded-2xl p-24 shadow"
-								elevation={0}
-							>
-								<div>
-									<div className="mb-20 flex items-center gap-12">
-										<div className="shrink-0 rounded-2xl bg-green-50 p-8 text-green-600">
-											<FuseSvgIcon size={24}>lucide:smartphone</FuseSvgIcon>
-										</div>
-										<div>
-											<Typography
-												variant="h6"
-												className="font-bold text-slate-800"
-											>
-												Pay via M-Pesa
-											</Typography>
-											<Typography
-												variant="caption"
-												color="text.secondary"
-											>
-												Lipa na M-Pesa STK Push Express
-											</Typography>
-										</div>
-									</div>
-
-									<Typography
-										color="text.secondary"
-										className="mb-24 text-sm leading-relaxed"
-									>
-										Please enter the amount and mobile phone number to trigger an STK prompt. Enter
-										your M-Pesa PIN on your phone to authorize the transaction.
-									</Typography>
-
-									<div className="flex flex-col gap-20">
-										<TextField
-											label="M-Pesa Phone Number"
-											variant="outlined"
-											fullWidth
-											placeholder="e.g. 0712345678"
-											value={phone}
-											onChange={(e) => setPhone(e.target.value)}
-											slotProps={{
-												input: {
-													startAdornment: (
-														<InputAdornment position="start">
-															<FuseSvgIcon
-																size={20}
-																className="text-slate-400"
-															>
-																lucide:phone
-															</FuseSvgIcon>
-														</InputAdornment>
-													)
-												}
-											}}
-										/>
-
-										<TextField
-											label="Amount to Pay (KES)"
-											variant="outlined"
-											fullWidth
-											placeholder="e.g. 10000"
-											value={amount}
-											onChange={(e) => setAmount(e.target.value)}
-											type="number"
-											slotProps={{
-												input: {
-													startAdornment: (
-														<InputAdornment position="start">
-															<span className="text-sm font-bold text-slate-400">
-																KES
-															</span>
-														</InputAdornment>
-													)
-												}
-											}}
-										/>
-									</div>
-								</div>
-
-								<div className="mt-32">
-									<Button
-										variant="contained"
-										fullWidth
-										size="large"
-										onClick={handleMpesaPay}
-										disabled={isProcessing}
-										className="h-56 rounded-2xl text-base font-bold capitalize transition-all duration-200"
-										sx={{
-											background: 'linear-gradient(135deg, #1b5e20 0%, #4caf50 100%)',
-											boxShadow: '0 4px 14px 0 rgba(76, 175, 80, 0.4)',
-											'&:hover': {
-												background: 'linear-gradient(135deg, #144517 0%, #3d8c41 100%)',
-												boxShadow: '0 6px 20px 0 rgba(76, 175, 80, 0.5)'
-											}
-										}}
-									>
-										{isProcessing ? 'Processing...' : 'Authorize STK Payment'}
-									</Button>
-
-									<div className="mt-16 flex items-center justify-center gap-8 text-xs text-slate-400">
-										<FuseSvgIcon size={14}>lucide:lock-keyhole</FuseSvgIcon>
-										<span>Secured transaction processed by Safaricom Daraja API</span>
-									</div>
-								</div>
-							</Paper>
-						</div>
+						{renderContent()}
 					</div>
 				}
 			/>

@@ -2,14 +2,27 @@
 
 import { useSession } from 'next-auth/react';
 import { useEffect, useState } from 'react';
-import { Box, Paper, Typography, CircularProgress } from '@mui/material';
+import { Box, Typography, CircularProgress } from '@mui/material';
 import FusePageSimple from '@fuse/core/FusePageSimple';
 import AuthGuardRedirect from '@auth/AuthGuardRedirect';
 import FuseSvgIcon from '@fuse/core/FuseSvgIcon';
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { StatCard } from '@/components/dashboard/StatCard';
 import { DonutCard } from '@/components/dashboard/DonutCard';
 import { RecentActivityCard } from '@/components/dashboard/RecentActivityCard';
+import { SystemAlert, SystemAlerts } from '@/components/dashboard/SystemAlerts';
+import { BACKEND_URL } from '@/lib/backend';
+
+const formatKes = (amount: number) => `KES ${amount.toLocaleString('en-KE', { maximumFractionDigits: 0 })}`;
+const formatDateTime = (iso: string) =>
+	new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+function formatUptime(seconds: number) {
+	const d = Math.floor(seconds / 86_400);
+	const h = Math.floor((seconds % 86_400) / 3_600);
+	const m = Math.floor((seconds % 3_600) / 60);
+
+	return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
 
 export default function SuperAdminDashboard() {
 	const { data: session } = useSession();
@@ -21,7 +34,7 @@ export default function SuperAdminDashboard() {
 	useEffect(() => {
 		if (!token) return;
 
-		fetch(`http://localhost:4000/api/dashboard/stats?t=${Date.now()}`, {
+		fetch(`${BACKEND_URL}/api/dashboard/stats?t=${Date.now()}`, {
 			headers: {
 				Authorization: `Bearer ${token}`,
 				'Cache-Control': 'no-cache',
@@ -90,51 +103,95 @@ export default function SuperAdminDashboard() {
 			);
 		}
 
-		const pieData = [
-			{ name: 'Admin', value: data.usersByRole.ADMIN || 0 },
-			{ name: 'Teacher', value: data.usersByRole.TEACHER || 0 },
-			{ name: 'Finance', value: data.usersByRole.FINANCE || 0 },
-			{ name: 'Student', value: data.usersByRole.STUDENT || 0 },
-			{ name: 'Parent', value: data.usersByRole.PARENT || 0 }
-		];
-
-		const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#14B8A6', '#8B5CF6'];
+		const roles = data.usersByRole;
+		const fees = data.fees;
+		const system = data.system;
+		const alerts: SystemAlert[] = data.alerts ?? [];
+		const reviewAlert = alerts.find((a) => a.key === 'mpesa-reconciliation');
 
 		return (
 			<div className="space-y-6">
 				<div>
 					<h1 className="text-2xl font-bold text-gray-900">Overview</h1>
-					<p className="text-sm text-gray-500 mt-1">Monitor your platform's users and activity</p>
+					<p className="mt-1 text-sm text-gray-500">
+						System health, users and anything that needs your attention
+					</p>
 				</div>
 
-				<div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+				<SystemAlerts alerts={alerts} />
+
+				<div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
 					<StatCard
 						icon="lucide:users"
 						iconColor="text-blue-600"
 						iconBg="bg-blue-50"
 						label="Total Users"
 						value={data.totalUsers}
-						caption={<>Registered across all <strong className="font-semibold text-gray-700">roles</strong></>}
+						caption={`${roles.ADMIN} admins · ${roles.TEACHER} teachers · ${roles.FINANCE} finance`}
+						footer={
+							<p className="border-t border-gray-100 pt-2 text-xs text-gray-500">
+								Students <span className="font-semibold text-gray-700">{roles.STUDENT}</span> · Parents{' '}
+								<span className="font-semibold text-gray-700">{roles.PARENT}</span>
+							</p>
+						}
 					/>
 					<StatCard
-						icon="lucide:graduation-cap"
-						iconColor="text-emerald-600"
-						iconBg="bg-emerald-50"
-						label="Total Students"
-						value={data.usersByRole.STUDENT || 0}
-						caption={<>Currently <strong className="font-semibold text-gray-700">enrolled</strong></>}
-					/>
-					<StatCard
-						icon="lucide:book-open"
+						icon="lucide:wallet"
 						iconColor="text-amber-600"
 						iconBg="bg-amber-50"
-						label="Total Teachers"
-						value={data.usersByRole.TEACHER || 0}
-						caption={<>Active <strong className="font-semibold text-gray-700">educators</strong></>}
+						label={`Fees collected · ${fees.term}`}
+						value={formatKes(fees.collected)}
+						caption={`${fees.collectionRate}% of the ${formatKes(fees.billed)} target billed this term`}
+						footer={
+							<div className="border-t border-gray-100 pt-2">
+								<div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-100">
+									<div
+										className="h-full rounded-full bg-amber-500"
+										style={{ width: `${Math.min(100, fees.collectionRate)}%` }}
+									/>
+								</div>
+							</div>
+						}
+					/>
+					<StatCard
+						icon="lucide:activity"
+						iconColor="text-emerald-600"
+						iconBg="bg-emerald-50"
+						label="System"
+						value={formatUptime(system.apiUptimeSeconds)}
+						caption={`API up since ${formatDateTime(system.apiStartedAt)} · database ${system.databaseLatencyMs} ms`}
+						footer={
+							<p className="border-t border-gray-100 pt-2 text-xs text-gray-500">
+								Last backup:{' '}
+								<span className="font-semibold text-gray-700">
+									{system.lastBackupAt
+										? formatDateTime(system.lastBackupAt)
+										: 'managed by Supabase (not reported)'}
+								</span>
+							</p>
+						}
+					/>
+					<StatCard
+						icon="lucide:triangle-alert"
+						iconColor={data.approvals.overdue || reviewAlert ? 'text-red-600' : 'text-teal-600'}
+						iconBg={data.approvals.overdue || reviewAlert ? 'bg-red-50' : 'bg-teal-50'}
+						label="Pending items"
+						value={data.approvals.overdue + (reviewAlert?.count ?? 0)}
+						caption={`${data.approvals.overdue} grade approval(s) past ${data.approvals.slaHours}h · ${reviewAlert?.count ?? 0} payment(s) to reconcile`}
+						footer={
+							<p className="border-t border-gray-100 pt-2 text-xs text-gray-500">
+								Last reconciliation:{' '}
+								<span className="font-semibold text-gray-700">
+									{system.lastReconciliationAt
+										? formatDateTime(system.lastReconciliationAt)
+										: 'not run yet'}
+								</span>
+							</p>
+						}
 					/>
 				</div>
 
-				<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+				<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 					<DonutCard
 						title="User Distribution"
 						subtitle="Breakdown of roles"
@@ -147,11 +204,20 @@ export default function SuperAdminDashboard() {
 						]}
 					/>
 					<RecentActivityCard
-						items={data.recentAuditLogs && data.recentAuditLogs.length > 0 ? data.recentAuditLogs.map((log: any) => ({
-							title: log.details,
-							timestamp: new Date(log.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
-							actor: `${log.actor?.firstName} ${log.actor?.lastName}`
-						})) : []}
+						items={
+							data.recentAuditLogs && data.recentAuditLogs.length > 0
+								? data.recentAuditLogs.map((log: any) => ({
+										title: log.details,
+										timestamp: new Date(log.createdAt).toLocaleDateString(undefined, {
+											month: 'short',
+											day: 'numeric',
+											hour: '2-digit',
+											minute: '2-digit'
+										}),
+										actor: `${log.actor?.firstName} ${log.actor?.lastName}`
+									}))
+								: []
+						}
 					/>
 				</div>
 			</div>
@@ -162,7 +228,9 @@ export default function SuperAdminDashboard() {
 		<AuthGuardRedirect auth={['SUPER_ADMIN']}>
 			<FusePageSimple
 				content={
-					<div className="mx-auto flex w-full max-w-7xl flex-col gap-32 px-24 py-32">{renderContent()}</div>
+					<div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 sm:py-8">
+						{renderContent()}
+					</div>
 				}
 			/>
 		</AuthGuardRedirect>

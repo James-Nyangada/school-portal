@@ -1,6 +1,7 @@
 'use client';
 
 import { useSession } from 'next-auth/react';
+import { useRouter } from 'next/navigation';
 import { useEffect, useState, useMemo } from 'react';
 import {
 	Box,
@@ -29,6 +30,9 @@ import FusePageSimple from '@fuse/core/FusePageSimple';
 import AuthGuardRedirect from '@auth/AuthGuardRedirect';
 import FuseSvgIcon from '@fuse/core/FuseSvgIcon';
 import { MaterialReactTable, type MRT_ColumnDef } from 'material-react-table';
+import { BACKEND_URL } from '@/lib/backend';
+import useToast from '@/hooks/useToast';
+import { ROLE_HOME } from '@/lib/roleHome';
 
 const ITEM_HEIGHT = 48;
 const ITEM_PADDING_TOP = 8;
@@ -42,7 +46,9 @@ const MenuProps = {
 };
 
 export default function SuperAdminUsers() {
-	const { data: session } = useSession();
+	const { notify, confirm, prompt } = useToast();
+	const { data: session, update } = useSession();
+	const router = useRouter();
 	const token = (session as any)?.backendToken;
 	const [users, setUsers] = useState<any[]>([]);
 	const [loading, setLoading] = useState(true);
@@ -95,12 +101,12 @@ export default function SuperAdminUsers() {
 	const fetchClassesAndSubjects = () => {
 		if (!token) return;
 
-		fetch('http://localhost:4000/api/classes', { headers: { Authorization: `Bearer ${token}` } })
+		fetch(`${BACKEND_URL}/api/classes`, { headers: { Authorization: `Bearer ${token}` } })
 			.then((res) => res.json())
 			.then((data) => setClasses(data || []))
 			.catch((err) => console.error(err));
 
-		fetch('http://localhost:4000/api/subjects', { headers: { Authorization: `Bearer ${token}` } })
+		fetch(`${BACKEND_URL}/api/subjects`, { headers: { Authorization: `Bearer ${token}` } })
 			.then((res) => res.json())
 			.then((data) => setSubjects(data || []))
 			.catch((err) => console.error(err));
@@ -111,7 +117,7 @@ export default function SuperAdminUsers() {
 
 		setLoading(true);
 		const roleQuery = roleTab !== 'All' ? `?role=${roleTab}` : '';
-		fetch(`http://localhost:4000/api/users${roleQuery}${roleQuery ? '&' : '?'}t=${Date.now()}`, {
+		fetch(`${BACKEND_URL}/api/users${roleQuery}${roleQuery ? '&' : '?'}t=${Date.now()}`, {
 			headers: {
 				Authorization: `Bearer ${token}`,
 				'Cache-Control': 'no-cache',
@@ -133,7 +139,7 @@ export default function SuperAdminUsers() {
 			})
 			.catch((err) => {
 				console.error(err);
-				alert(err.message || 'Error fetching users');
+				notify(err.message || 'Error fetching users', 'error');
 				setLoading(false);
 			});
 	};
@@ -145,7 +151,7 @@ export default function SuperAdminUsers() {
 
 	const handleCreate = async () => {
 		try {
-			const res = await fetch('http://localhost:4000/api/users', {
+			const res = await fetch(`${BACKEND_URL}/api/users`, {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -156,7 +162,9 @@ export default function SuperAdminUsers() {
 
 			if (res.ok) {
 				const result = await res.json();
-				alert(`Account created successfully! Temp Password: ${result.tempPassword}`);
+				notify(`Account created successfully! Temporary password: ${result.tempPassword}`, 'success', {
+					persist: true
+				});
 				setFormData({
 					role: 'ADMIN',
 					firstName: '',
@@ -168,7 +176,7 @@ export default function SuperAdminUsers() {
 				setOpenCreate(false);
 				fetchUsers();
 			} else {
-				alert('Failed to create user');
+				notify('Failed to create user', 'error');
 			}
 		} catch (e) {
 			console.error(e);
@@ -179,23 +187,32 @@ export default function SuperAdminUsers() {
 		let customTempPassword = '';
 
 		if (action === 'FORCE_RESET') {
-			const confirmCustom = confirm(
-				'Do you want to set a custom temporary password? Click Cancel to auto-generate.'
-			);
+			const input = await prompt('Enter a custom temporary password, or leave blank to auto-generate one.', {
+				title: 'Reset password',
+				label: 'Custom temporary password',
+				confirmText: 'Reset'
+			});
 
-			if (confirmCustom) {
-				const input = prompt('Enter custom temporary password:');
+			if (input === null) return;
 
-				if (input) customTempPassword = input;
-			}
+			customTempPassword = input.trim();
 		}
 
-		const reason = action === 'SUSPEND' ? prompt('Enter reason for suspension:') : '';
+		const reason =
+			action === 'SUSPEND'
+				? await prompt('Why is this account being suspended?', {
+						title: 'Suspend account',
+						label: 'Reason for suspension',
+						multiline: true,
+						required: true,
+						confirmText: 'Suspend'
+					})
+				: '';
 
-		if (action === 'SUSPEND' && !reason) return;
+		if (action === 'SUSPEND' && !reason?.trim()) return;
 
 		try {
-			const res = await fetch(`http://localhost:4000/api/users/${id}`, {
+			const res = await fetch(`${BACKEND_URL}/api/users/${id}`, {
 				method: 'PATCH',
 				headers: {
 					'Content-Type': 'application/json',
@@ -207,14 +224,16 @@ export default function SuperAdminUsers() {
 			if (res.ok) {
 				if (action === 'FORCE_RESET') {
 					const data = await res.json();
-					alert(`Password reset. New temp password: ${data.tempPassword}`);
+					notify(`Password reset. New temporary password: ${data.tempPassword}`, 'success', {
+						persist: true
+					});
 				} else if (
 					action === 'SUSPEND' ||
 					action === 'REACTIVATE' ||
 					action === 'COMPLETED' ||
 					action === 'TRANSFERRED'
 				) {
-					alert(`User status updated to ${action}`);
+					notify(`User status updated to ${action}`, 'success');
 				}
 
 				fetchUsers();
@@ -224,22 +243,70 @@ export default function SuperAdminUsers() {
 		}
 	};
 
-	const handleDelete = async (id: string) => {
-		if (id === (session?.user as any)?.id) {
-			alert('You cannot delete yourself!');
-			return;
-		}
+	/** Read-only view of the portal as this user; audit-logged and shown with a banner until exited. */
+	const handleViewAs = async (user: {
+		id: string;
+		firstName?: string | null;
+		lastName?: string | null;
+		email?: string | null;
+		phone?: string | null;
+	}) => {
+		const name = [user.firstName, user.lastName].filter(Boolean).join(' ') || user.email || user.phone;
+		const reason = await prompt(
+			`You'll see the portal exactly as ${name} does, read-only, for up to 30 minutes. This is recorded in the audit log.`,
+			{
+				title: 'View as user',
+				label: 'Reason (e.g. support ticket)',
+				multiline: true,
+				required: true,
+				confirmText: 'View as'
+			}
+		);
 
-		if (
-			!confirm(
-				'Are you sure you want to permanently delete this user from the database? This action cannot be undone.'
-			)
-		) {
-			return;
-		}
+		if (!reason?.trim()) return;
 
 		try {
-			const res = await fetch(`http://localhost:4000/api/users/${id}`, {
+			const res = await fetch(`${BACKEND_URL}/api/auth/impersonate/${user.id}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+				body: JSON.stringify({ reason })
+			});
+			const data = await res.json();
+
+			if (!res.ok) {
+				notify(data.error || 'Could not start view-as', 'error');
+				return;
+			}
+
+			const next = await update({ viewAs: { token: data.token } });
+
+			if (!next?.viewAs) {
+				notify('Could not switch to this user. Please try again.', 'error');
+				return;
+			}
+
+			router.push(ROLE_HOME[data.user.role] ?? '/');
+		} catch (e) {
+			console.error(e);
+			notify('Could not start view-as', 'error');
+		}
+	};
+
+	const handleDelete = async (id: string) => {
+		if (id === (session?.user as any)?.id) {
+			notify('You cannot delete yourself!', 'warning');
+			return;
+		}
+
+		const confirmed = await confirm(
+			'Are you sure you want to permanently delete this user from the database? This action cannot be undone.',
+			{ title: 'Delete user', confirmText: 'Delete', destructive: true }
+		);
+
+		if (!confirmed) return;
+
+		try {
+			const res = await fetch(`${BACKEND_URL}/api/users/${id}`, {
 				method: 'DELETE',
 				headers: {
 					Authorization: `Bearer ${token}`
@@ -251,7 +318,7 @@ export default function SuperAdminUsers() {
 				fetchUsers();
 			} else {
 				const err = await res.json();
-				alert(err.error || 'Failed to delete user');
+				notify(err.error || 'Failed to delete user', 'error');
 			}
 		} catch (e) {
 			console.error(e);
@@ -303,7 +370,7 @@ export default function SuperAdminUsers() {
 		uploadData.append('file', file);
 
 		try {
-			const res = await fetch('http://localhost:4000/api/upload', {
+			const res = await fetch(`${BACKEND_URL}/api/upload`, {
 				method: 'POST',
 				headers: {
 					Authorization: `Bearer ${token}`
@@ -316,10 +383,10 @@ export default function SuperAdminUsers() {
 				setEditFormData((prev) => ({ ...prev, [fieldName]: result.url }));
 			} else {
 				const err = await res.json();
-				alert(err.error || 'Failed to upload file');
+				notify(err.error || 'Failed to upload file', 'error');
 			}
 		} catch (err: any) {
-			alert(err.message || 'An error occurred during upload');
+			notify(err.message || 'An error occurred during upload', 'error');
 		} finally {
 			setUploadingField(null);
 		}
@@ -327,7 +394,7 @@ export default function SuperAdminUsers() {
 
 	const handleSaveEdit = async () => {
 		try {
-			const res = await fetch(`http://localhost:4000/api/students/${editFormData.id}`, {
+			const res = await fetch(`${BACKEND_URL}/api/students/${editFormData.id}`, {
 				method: 'PATCH',
 				headers: {
 					'Content-Type': 'application/json',
@@ -337,15 +404,15 @@ export default function SuperAdminUsers() {
 			});
 
 			if (res.ok) {
-				alert('Student details updated successfully!');
+				notify('Student details updated successfully!', 'success');
 				setOpenEdit(false);
 				fetchUsers();
 			} else {
 				const err = await res.json();
-				alert(err.error || 'Failed to update student details');
+				notify(err.error || 'Failed to update student details', 'error');
 			}
 		} catch (e: any) {
-			alert(e.message || 'Error updating student');
+			notify(e.message || 'Error updating student', 'error');
 		}
 	};
 
@@ -513,6 +580,17 @@ export default function SuperAdminUsers() {
 										>
 											Reset Pwd
 										</Button>
+										{row.original.role !== 'SUPER_ADMIN' && (
+											<Button
+												size="small"
+												variant="outlined"
+												color="warning"
+												startIcon={<FuseSvgIcon size={14}>lucide:eye</FuseSvgIcon>}
+												onClick={() => handleViewAs(row.original)}
+											>
+												View as
+											</Button>
+										)}
 										<Button
 											size="small"
 											variant="contained"

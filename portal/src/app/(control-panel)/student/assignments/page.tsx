@@ -1,7 +1,8 @@
 'use client';
 
 import { useSession } from 'next-auth/react';
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import Typography from '@mui/material/Typography';
 import Paper from '@mui/material/Paper';
 import Box from '@mui/material/Box';
@@ -12,6 +13,7 @@ import DialogTitle from '@mui/material/DialogTitle';
 import DialogContent from '@mui/material/DialogContent';
 import DialogActions from '@mui/material/DialogActions';
 import TextField from '@mui/material/TextField';
+import IconButton from '@mui/material/IconButton';
 import Radio from '@mui/material/Radio';
 import RadioGroup from '@mui/material/RadioGroup';
 import FormControlLabel from '@mui/material/FormControlLabel';
@@ -28,6 +30,8 @@ import FusePageSimple from '@fuse/core/FusePageSimple';
 import AuthGuardRedirect from '@auth/AuthGuardRedirect';
 import FuseSvgIcon from '@fuse/core/FuseSvgIcon';
 import { useSnackbar } from 'notistack';
+import { BACKEND_URL } from '@/lib/backend';
+import { downloadAssignmentFile } from '@/lib/assignments';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -63,9 +67,12 @@ type Assignment = {
 	subject?: { name?: string; code?: string } | string;
 	description?: string;
 	dueDate: string;
-	type: 'QUIZ' | 'FILE_UPLOAD' | 'TEXT';
+	type: 'QUIZ' | 'FILE_UPLOAD';
 	maxScore: number;
+	attachmentUrl?: string | null;
+	attachmentName?: string | null;
 	status?: string;
+	isOpen?: boolean;
 	questions?: Question[];
 	submission?: Submission | null;
 };
@@ -79,7 +86,7 @@ function getSubmissionLabel(a: Assignment): string {
 
 	switch (a.submission.status) {
 		case 'PENDING':
-			return 'Pending Review';
+			return a.type === 'FILE_UPLOAD' ? 'Handed In' : 'Pending Review';
 		case 'AUTO_GRADED':
 			return 'Auto-Graded';
 		case 'MANUALLY_GRADED':
@@ -109,7 +116,7 @@ function getTypeIcon(type: string) {
 		case 'QUIZ':
 			return 'lucide:brain';
 		case 'FILE_UPLOAD':
-			return 'lucide:upload';
+			return 'lucide:file-down';
 		default:
 			return 'lucide:file-text';
 	}
@@ -120,7 +127,7 @@ function getTypeLabel(type: string) {
 		case 'QUIZ':
 			return 'Quiz';
 		case 'FILE_UPLOAD':
-			return 'File Upload';
+			return 'Download & Hand In';
 		default:
 			return 'Written';
 	}
@@ -146,6 +153,8 @@ export default function StudentAssignments() {
 	const token = (session as any)?.backendToken;
 	const studentId = (session?.user as any)?.id;
 	const { enqueueSnackbar } = useSnackbar();
+	const router = useRouter();
+	const deepLinkHandled = useRef(false);
 
 	const [assignments, setAssignments] = useState<Assignment[]>([]);
 	const [loading, setLoading] = useState(true);
@@ -158,12 +167,8 @@ export default function StudentAssignments() {
 	const [submittingQuiz, setSubmittingQuiz] = useState(false);
 	const [quizResult, setQuizResult] = useState<Submission | null>(null);
 
-	// File upload dialog
-	const [uploadOpen, setUploadOpen] = useState(false);
-	const [uploadAssignment, setUploadAssignment] = useState<Assignment | null>(null);
-	const [uploadFile, setUploadFile] = useState<File | null>(null);
-	const [uploadText, setUploadText] = useState('');
-	const [uploadingFile, setUploadingFile] = useState(false);
+	// File assignments: downloaded, done on paper, handed in to the teacher
+	const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
 	// Results dialog
 	const [resultsOpen, setResultsOpen] = useState(false);
@@ -175,7 +180,7 @@ export default function StudentAssignments() {
 
 		setLoading(true);
 		try {
-			const res = await fetch(`http://localhost:4000/api/assignments?studentId=${studentId}`, {
+			const res = await fetch(`${BACKEND_URL}/api/assignments?studentId=${studentId}`, {
 				headers: { Authorization: `Bearer ${token}` }
 			});
 
@@ -248,7 +253,7 @@ export default function StudentAssignments() {
 					answer: quizAnswers[q.id] || ''
 				}))
 			};
-			const res = await fetch(`http://localhost:4000/api/assignments/${quizAssignment.id}/submit`, {
+			const res = await fetch(`${BACKEND_URL}/api/assignments/${quizAssignment.id}/submit`, {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -276,71 +281,17 @@ export default function StudentAssignments() {
 		}
 	};
 
-	/* ---------- File upload handlers ---------- */
-	const openUpload = (assignment: Assignment) => {
-		setUploadAssignment(assignment);
-		setUploadFile(null);
-		setUploadText('');
-		setUploadOpen(true);
-	};
+	/* ---------- File download ---------- */
+	const downloadFile = async (assignment: Assignment) => {
+		if (!token) return;
 
-	const submitFileUpload = async () => {
-		if (!uploadAssignment || !token) return;
-
-		if (!uploadFile && !uploadText.trim()) {
-			enqueueSnackbar('Please select a file or enter text content', { variant: 'warning' });
-			return;
-		}
-
-		setUploadingFile(true);
+		setDownloadingId(assignment.id);
 		try {
-			let fileUrl = '';
-
-			if (uploadFile) {
-				// Upload to Cloudinary via unsigned upload
-				const formData = new FormData();
-				formData.append('file', uploadFile);
-				formData.append('upload_preset', 'school_portal');
-				const cloudRes = await fetch('https://api.cloudinary.com/v1_1/school-portal/auto/upload', {
-					method: 'POST',
-					body: formData
-				});
-
-				if (cloudRes.ok) {
-					const cloudData = await cloudRes.json();
-					fileUrl = cloudData.secure_url || cloudData.url || '';
-				} else {
-					// Fallback: convert to base64 data URL
-					fileUrl = await new Promise<string>((resolve) => {
-						const reader = new FileReader();
-						reader.onload = () => resolve(reader.result as string);
-						reader.readAsDataURL(uploadFile);
-					});
-				}
-			}
-
-			const res = await fetch(`http://localhost:4000/api/assignments/${uploadAssignment.id}/submit`, {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					Authorization: `Bearer ${token}`
-				},
-				body: JSON.stringify({
-					fileUrl,
-					textContent: uploadText.trim() || undefined
-				})
-			});
-
-			if (!res.ok) throw new Error('Submission failed');
-
-			enqueueSnackbar('Assignment submitted successfully!', { variant: 'success' });
-			setUploadOpen(false);
-			fetchAssignments();
+			await downloadAssignmentFile(token, assignment);
 		} catch (err) {
-			console.error(err);
-			enqueueSnackbar('Failed to submit assignment', { variant: 'error' });
+			enqueueSnackbar((err as Error).message, { variant: 'error' });
 		} finally {
-			setUploadingFile(false);
+			setDownloadingId(null);
 		}
 	};
 
@@ -360,21 +311,55 @@ export default function StudentAssignments() {
 			return;
 		}
 
+		if (assignment.isOpen === false) {
+			enqueueSnackbar('This assignment is locked by your teacher', { variant: 'info' });
+			return;
+		}
+
 		if (assignment.submission) return; // Already submitted, pending review
 
 		if (assignment.type === 'QUIZ') {
 			openQuiz(assignment);
 		} else {
-			openUpload(assignment);
+			downloadFile(assignment);
 		}
 	};
 
+	// Notification links land here as /student/assignments?open=<id>
+	useEffect(() => {
+		if (loading || deepLinkHandled.current) return;
+
+		const id = new URLSearchParams(window.location.search).get('open');
+
+		if (!id) return;
+
+		deepLinkHandled.current = true;
+		router.replace('/student/assignments');
+		const target = assignments.find((a) => a.id === id);
+
+		if (!target) {
+			enqueueSnackbar('That assignment is no longer available', { variant: 'warning' });
+		} else if (target.submission && target.submission.status === 'PENDING') {
+			enqueueSnackbar('You have already submitted this assignment', { variant: 'info' });
+		} else {
+			handleCardAction(target);
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [loading, assignments]);
+
 	const getActionLabel = (a: Assignment) => {
+		const graded = a.submission?.status === 'AUTO_GRADED' || a.submission?.status === 'MANUALLY_GRADED';
+
+		if (a.isOpen === false && !graded) return 'Locked';
+
 		if (!a.submission) {
-			return a.type === 'QUIZ' ? 'Take Quiz' : 'Submit Work';
+			if (a.type === 'QUIZ') return 'Take Quiz';
+
+			return downloadingId === a.id ? 'Downloading…' : 'Download Assignment';
 		}
 
-		if (a.submission.status === 'PENDING') return 'Awaiting Review';
+		if (a.submission.status === 'PENDING')
+			return a.type === 'FILE_UPLOAD' ? 'Handed In · Awaiting Marks' : 'Awaiting Review';
 
 		return 'View Results';
 	};
@@ -411,7 +396,7 @@ export default function StudentAssignments() {
 			<AuthGuardRedirect auth={['STUDENT']}>
 				<FusePageSimple
 					content={
-						<div className="mx-auto flex w-full max-w-7xl flex-col gap-24 p-24">
+						<div className="mx-auto flex w-full max-w-7xl flex-col gap-6 p-6">
 							<Skeleton
 								variant="text"
 								width={300}
@@ -422,7 +407,7 @@ export default function StudentAssignments() {
 								width={400}
 								height={24}
 							/>
-							<div className="mt-16 grid grid-cols-1 gap-24 md:grid-cols-2 lg:grid-cols-3">
+							<div className="mt-4 grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
 								{[1, 2, 3, 4, 5, 6].map((i) => (
 									<Skeleton
 										key={i}
@@ -443,9 +428,9 @@ export default function StudentAssignments() {
 		<AuthGuardRedirect auth={['STUDENT']}>
 			<FusePageSimple
 				content={
-					<div className="mx-auto flex w-full max-w-7xl flex-col gap-32 px-24 py-32">
+					<div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 sm:py-8">
 						{/* ---- Header ---- */}
-						<Box className="flex flex-col items-start justify-between gap-16 sm:flex-row sm:items-center">
+						<Box className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
 							<div>
 								<Typography className="text-4xl font-extrabold tracking-tight">
 									Assignments &amp; Coursework
@@ -454,46 +439,37 @@ export default function StudentAssignments() {
 									View your assignments, take quizzes, and track your grades.
 								</Typography>
 							</div>
-							<Box className="flex items-center gap-12">
-								<Paper
-									className="flex items-center gap-8 rounded-xl px-16 py-8"
-									elevation={0}
-									sx={{ bgcolor: 'primary.50' }}
-								>
-									<FuseSvgIcon
-										size={18}
-										color="primary"
+							<div className="flex flex-wrap items-center gap-2">
+								{[
+									{
+										label: 'To do',
+										value: pendingAssignments.length,
+										icon: 'lucide:clipboard-list',
+										cls: 'bg-indigo-50 text-indigo-700 border-indigo-100'
+									},
+									{
+										label: 'Submitted',
+										value: submittedAssignments.length,
+										icon: 'lucide:send',
+										cls: 'bg-amber-50 text-amber-700 border-amber-100'
+									},
+									{
+										label: 'Graded',
+										value: gradedAssignments.length,
+										icon: 'lucide:award',
+										cls: 'bg-emerald-50 text-emerald-700 border-emerald-100'
+									}
+								].map((p) => (
+									<div
+										key={p.label}
+										className={`flex items-center gap-2 rounded-full border px-4 py-2 ${p.cls}`}
 									>
-										lucide:clipboard-list
-									</FuseSvgIcon>
-									<Typography
-										variant="body2"
-										fontWeight={600}
-										color="primary.main"
-									>
-										{pendingAssignments.length} Pending
-									</Typography>
-								</Paper>
-								<Paper
-									className="flex items-center gap-8 rounded-xl px-16 py-8"
-									elevation={0}
-									sx={{ bgcolor: 'success.50' }}
-								>
-									<FuseSvgIcon
-										size={18}
-										color="success"
-									>
-										lucide:check-circle
-									</FuseSvgIcon>
-									<Typography
-										variant="body2"
-										fontWeight={600}
-										color="success.main"
-									>
-										{gradedAssignments.length} Graded
-									</Typography>
-								</Paper>
-							</Box>
+										<FuseSvgIcon size={16}>{p.icon}</FuseSvgIcon>
+										<span className="text-lg leading-none font-bold">{p.value}</span>
+										<span className="text-sm font-medium">{p.label}</span>
+									</div>
+								))}
+							</div>
 						</Box>
 
 						{/* ---- Tabs ---- */}
@@ -506,7 +482,7 @@ export default function StudentAssignments() {
 								onChange={(_, v) => setTabValue(v)}
 								variant="scrollable"
 								scrollButtons="auto"
-								sx={{ px: 2, borderBottom: 1, borderColor: 'divider' }}
+								sx={{ '& .MuiTab-root': { textTransform: 'none', fontWeight: 600, minHeight: 44 } }}
 							>
 								<Tab
 									label={`To Do (${pendingAssignments.length})`}
@@ -533,7 +509,7 @@ export default function StudentAssignments() {
 
 						{/* ---- Assignment Cards ---- */}
 						{tabAssignments[tabValue].length === 0 ? (
-							<Paper className="flex min-h-240 flex-col items-center justify-center gap-16 rounded-2xl border-2 border-dashed p-48 text-center">
+							<Paper className="flex min-h-[240px] flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed p-12 text-center">
 								<FuseSvgIcon
 									size={56}
 									color="disabled"
@@ -543,7 +519,7 @@ export default function StudentAssignments() {
 										: tabValue === 1
 											? 'lucide:clock'
 											: tabValue === 2
-												? 'lucide:bar-chart-3'
+												? 'lucide:chart-column'
 												: 'lucide:inbox'}
 								</FuseSvgIcon>
 								<Typography
@@ -565,10 +541,11 @@ export default function StudentAssignments() {
 								</Typography>
 							</Paper>
 						) : (
-							<div className="grid grid-cols-1 gap-24 md:grid-cols-2 lg:grid-cols-3">
+							<div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
 								{tabAssignments[tabValue].map((assignment) => {
-									const overdue = !assignment.submission && isOverdue(assignment.dueDate);
-									const dueSoon = !assignment.submission && isDueSoon(assignment.dueDate);
+									const locked = assignment.isOpen === false;
+									const overdue = !locked && !assignment.submission && isOverdue(assignment.dueDate);
+									const dueSoon = !locked && !assignment.submission && isDueSoon(assignment.dueDate);
 									const graded =
 										assignment.submission?.status === 'AUTO_GRADED' ||
 										assignment.submission?.status === 'MANUALLY_GRADED';
@@ -582,6 +559,7 @@ export default function StudentAssignments() {
 											key={assignment.id}
 											className="flex flex-col overflow-hidden rounded-2xl shadow-sm transition-shadow hover:shadow-md"
 											sx={{
+												opacity: locked && !graded ? 0.75 : 1,
 												border: overdue ? '2px solid' : dueSoon ? '2px solid' : '1px solid',
 												borderColor: overdue
 													? 'error.main'
@@ -595,9 +573,11 @@ export default function StudentAssignments() {
 												sx={{
 													background: graded
 														? 'linear-gradient(135deg, #10b981 0%, #059669 100%)'
-														: assignment.type === 'QUIZ'
-															? 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)'
-															: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+														: locked
+															? 'linear-gradient(135deg, #64748b 0%, #475569 100%)'
+															: assignment.type === 'QUIZ'
+																? 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)'
+																: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
 													px: 2.5,
 													py: 1.5,
 													display: 'flex',
@@ -605,12 +585,14 @@ export default function StudentAssignments() {
 													justifyContent: 'space-between'
 												}}
 											>
-												<Box className="flex items-center gap-8">
+												<Box className="flex items-center gap-2">
 													<FuseSvgIcon
 														size={18}
 														sx={{ color: 'white' }}
 													>
-														{getTypeIcon(assignment.type)}
+														{locked && !graded
+															? 'lucide:lock'
+															: getTypeIcon(assignment.type)}
 													</FuseSvgIcon>
 													<Typography
 														variant="caption"
@@ -622,6 +604,7 @@ export default function StudentAssignments() {
 														}}
 													>
 														{getTypeLabel(assignment.type)}
+														{locked && ' · Locked'}
 													</Typography>
 												</Box>
 												<Chip
@@ -639,7 +622,7 @@ export default function StudentAssignments() {
 											</Box>
 
 											{/* Card body */}
-											<Box className="flex flex-1 flex-col gap-12 p-20">
+											<Box className="flex flex-1 flex-col gap-3 p-5">
 												<Typography
 													variant="subtitle1"
 													fontWeight={700}
@@ -648,7 +631,7 @@ export default function StudentAssignments() {
 													{assignment.title}
 												</Typography>
 
-												<Box className="flex flex-wrap items-center gap-8">
+												<Box className="flex flex-wrap items-center gap-2">
 													<Chip
 														label={
 															typeof assignment.subject === 'object' && assignment.subject
@@ -666,7 +649,7 @@ export default function StudentAssignments() {
 															color="error"
 															icon={
 																<FuseSvgIcon size={14}>
-																	lucide:alert-triangle
+																	lucide:triangle-alert
 																</FuseSvgIcon>
 															}
 														/>
@@ -677,13 +660,13 @@ export default function StudentAssignments() {
 															size="small"
 															color="warning"
 															icon={
-																<FuseSvgIcon size={14}>lucide:alert-circle</FuseSvgIcon>
+																<FuseSvgIcon size={14}>lucide:circle-alert</FuseSvgIcon>
 															}
 														/>
 													)}
 												</Box>
 
-												<Box className="mt-4 flex items-center gap-6">
+												<Box className="mt-1 flex items-center gap-1.5">
 													<FuseSvgIcon
 														size={16}
 														color="action"
@@ -704,7 +687,7 @@ export default function StudentAssignments() {
 													</Typography>
 												</Box>
 
-												<Box className="flex items-center gap-6">
+												<Box className="flex items-center gap-1.5">
 													<FuseSvgIcon
 														size={16}
 														color="action"
@@ -719,10 +702,50 @@ export default function StudentAssignments() {
 													</Typography>
 												</Box>
 
+												{assignment.type === 'FILE_UPLOAD' && assignment.attachmentUrl && (
+													<Box
+														className="mt-1 flex items-start gap-1.5 rounded-xl p-2.5"
+														sx={{ bgcolor: 'action.hover' }}
+													>
+														<FuseSvgIcon
+															size={16}
+															color="action"
+															sx={{ mt: 0.25 }}
+														>
+															lucide:file-text
+														</FuseSvgIcon>
+														<Box className="min-w-0 flex-1">
+															<Typography
+																variant="body2"
+																fontWeight={600}
+																noWrap
+															>
+																{assignment.attachmentName || 'Assignment file'}
+															</Typography>
+															<Typography
+																variant="caption"
+																color="text.secondary"
+															>
+																Do it on paper and hand it in to your teacher.
+															</Typography>
+														</Box>
+														{assignment.submission && !locked && (
+															<IconButton
+																size="small"
+																aria-label="Download file"
+																disabled={downloadingId === assignment.id}
+																onClick={() => downloadFile(assignment)}
+															>
+																<FuseSvgIcon size={16}>lucide:download</FuseSvgIcon>
+															</IconButton>
+														)}
+													</Box>
+												)}
+
 												{/* Score bar for graded */}
 												{graded && scorePercent !== null && (
-													<Box className="mt-8">
-														<Box className="mb-4 flex items-center justify-between">
+													<Box className="mt-2">
+														<Box className="mb-1 flex items-center justify-between">
 															<Typography
 																variant="body2"
 																fontWeight={600}
@@ -786,7 +809,11 @@ export default function StudentAssignments() {
 													}
 													fullWidth
 													onClick={() => handleCardAction(assignment)}
-													disabled={assignment.submission?.status === 'PENDING'}
+													disabled={
+														assignment.submission?.status === 'PENDING' ||
+														(locked && !graded) ||
+														downloadingId === assignment.id
+													}
 													sx={{
 														mt: 1,
 														borderRadius: '12px',
@@ -795,13 +822,15 @@ export default function StudentAssignments() {
 													}}
 													startIcon={
 														<FuseSvgIcon size={18}>
-															{!assignment.submission
-																? assignment.type === 'QUIZ'
-																	? 'lucide:play'
-																	: 'lucide:upload'
-																: graded
-																	? 'lucide:eye'
-																	: 'lucide:loader'}
+															{locked && !graded
+																? 'lucide:lock'
+																: !assignment.submission
+																	? assignment.type === 'QUIZ'
+																		? 'lucide:play'
+																		: 'lucide:download'
+																	: graded
+																		? 'lucide:eye'
+																		: 'lucide:loader'}
 														</FuseSvgIcon>
 													}
 												>
@@ -840,7 +869,7 @@ export default function StudentAssignments() {
 							<DialogContent sx={{ py: 3, px: 3 }}>
 								{quizResult ? (
 									/* ------- Results view ------- */
-									<Box className="flex flex-col items-center gap-24 py-24">
+									<Box className="flex flex-col items-center gap-6 py-6">
 										<Box
 											sx={{
 												width: 120,
@@ -884,7 +913,7 @@ export default function StudentAssignments() {
 									</Box>
 								) : (
 									/* ------- Question form ------- */
-									<Box className="mt-16 flex flex-col gap-24">
+									<Box className="mt-4 flex flex-col gap-6">
 										{(quizAssignment?.questions || []).map((q, idx) => {
 											const options = parseOptions(q.options);
 											return (
@@ -897,7 +926,7 @@ export default function StudentAssignments() {
 														<FormLabel
 															sx={{ fontWeight: 600, mb: 1.5, color: 'text.primary' }}
 														>
-															<Box className="flex items-center gap-8">
+															<Box className="flex items-center gap-2">
 																<Chip
 																	label={`Q${idx + 1}`}
 																	size="small"
@@ -1022,129 +1051,6 @@ export default function StudentAssignments() {
 						</Dialog>
 
 						{/* ================================================================ */}
-						{/*  FILE UPLOAD DIALOG                                             */}
-						{/* ================================================================ */}
-						<Dialog
-							open={uploadOpen}
-							onClose={() => !uploadingFile && setUploadOpen(false)}
-							maxWidth="sm"
-							fullWidth
-							PaperProps={{ sx: { borderRadius: '16px' } }}
-						>
-							<DialogTitle
-								sx={{
-									background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
-									color: 'white',
-									display: 'flex',
-									alignItems: 'center',
-									gap: 1.5
-								}}
-							>
-								<FuseSvgIcon sx={{ color: 'white' }}>lucide:upload</FuseSvgIcon>
-								Submit: {uploadAssignment?.title}
-							</DialogTitle>
-
-							<DialogContent sx={{ py: 3, px: 3 }}>
-								<Box className="mt-16 flex flex-col gap-24">
-									{uploadAssignment?.description && (
-										<Alert
-											severity="info"
-											sx={{ borderRadius: '12px' }}
-										>
-											{uploadAssignment.description}
-										</Alert>
-									)}
-
-									{/* File input */}
-									{uploadAssignment?.type === 'FILE_UPLOAD' && (
-										<Paper
-											variant="outlined"
-											sx={{
-												p: 3,
-												borderRadius: '12px',
-												borderStyle: 'dashed',
-												textAlign: 'center',
-												cursor: 'pointer',
-												'&:hover': { bgcolor: 'action.hover' }
-											}}
-											onClick={() => document.getElementById('file-upload-input')?.click()}
-										>
-											<input
-												id="file-upload-input"
-												type="file"
-												hidden
-												onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
-											/>
-											<FuseSvgIcon
-												size={40}
-												color="action"
-												sx={{ mb: 1 }}
-											>
-												lucide:cloud-upload
-											</FuseSvgIcon>
-											<Typography
-												variant="body2"
-												color="text.secondary"
-											>
-												{uploadFile
-													? uploadFile.name
-													: 'Click to select a file or drag and drop'}
-											</Typography>
-											{uploadFile && (
-												<Typography
-													variant="caption"
-													color="text.secondary"
-													sx={{ mt: 0.5 }}
-												>
-													{(uploadFile.size / 1024).toFixed(1)} KB
-												</Typography>
-											)}
-										</Paper>
-									)}
-
-									{/* Text content */}
-									<TextField
-										label="Additional Notes / Written Content"
-										multiline
-										rows={5}
-										fullWidth
-										placeholder="Enter your answer, essay, or additional notes here..."
-										value={uploadText}
-										onChange={(e) => setUploadText(e.target.value)}
-									/>
-								</Box>
-							</DialogContent>
-
-							<Divider />
-							<DialogActions sx={{ px: 3, py: 2 }}>
-								<Button
-									onClick={() => setUploadOpen(false)}
-									disabled={uploadingFile}
-								>
-									Cancel
-								</Button>
-								<Button
-									variant="contained"
-									onClick={submitFileUpload}
-									disabled={uploadingFile}
-									startIcon={
-										uploadingFile ? (
-											<CircularProgress
-												size={18}
-												color="inherit"
-											/>
-										) : (
-											<FuseSvgIcon size={18}>lucide:send</FuseSvgIcon>
-										)
-									}
-									sx={{ borderRadius: '10px', minWidth: 140 }}
-								>
-									{uploadingFile ? 'Uploading...' : 'Submit Assignment'}
-								</Button>
-							</DialogActions>
-						</Dialog>
-
-						{/* ================================================================ */}
 						{/*  VIEW RESULTS DIALOG                                            */}
 						{/* ================================================================ */}
 						<Dialog
@@ -1169,9 +1075,9 @@ export default function StudentAssignments() {
 
 							<DialogContent sx={{ py: 3, px: 3 }}>
 								{resultsAssignment?.submission && (
-									<Box className="mt-16 flex flex-col gap-24">
+									<Box className="mt-4 flex flex-col gap-6">
 										{/* Score display */}
-										<Box className="flex items-center justify-center gap-24">
+										<Box className="flex items-center justify-center gap-6">
 											<Box
 												sx={{
 													width: 100,
@@ -1210,7 +1116,7 @@ export default function StudentAssignments() {
 										</Box>
 
 										{/* Details */}
-										<Box className="flex flex-col gap-12">
+										<Box className="flex flex-col gap-3">
 											<Paper
 												variant="outlined"
 												sx={{ p: 2, borderRadius: '12px' }}
@@ -1304,6 +1210,18 @@ export default function StudentAssignments() {
 													</Typography>
 												</Paper>
 											</Box>
+										)}
+
+										{resultsAssignment.attachmentUrl && (
+											<Button
+												variant="outlined"
+												startIcon={<FuseSvgIcon size={18}>lucide:download</FuseSvgIcon>}
+												onClick={() => downloadFile(resultsAssignment)}
+												disabled={downloadingId === resultsAssignment.id}
+												sx={{ borderRadius: '10px' }}
+											>
+												Download Assignment
+											</Button>
 										)}
 
 										{/* File link */}

@@ -16,6 +16,7 @@ import { NavbarContextProvider } from '@/components/theme-layouts/components/nav
 import { QuickPanelProvider } from '@/components/theme-layouts/components/quickPanel/contexts/QuickPanelContext/QuickPanelContextProvider';
 import RootThemeProvider from '@/contexts/RootThemeProvider';
 import { NavigationContextProvider } from '@/components/theme-layouts/components/navigation/contexts/NavigationContextProvider';
+import { ConfirmToast, PromptToast } from '@/components/toast/InteractiveToasts';
 
 const queryClient = new QueryClient({
 	defaultOptions: {
@@ -57,6 +58,7 @@ function App(props: AppProps) {
 													{/* Notistack Notification Provider */}
 													<SnackbarProvider
 														maxSnack={5}
+														Components={{ confirm: ConfirmToast, prompt: PromptToast }}
 														anchorOrigin={{
 															vertical: 'bottom',
 															horizontal: 'right'

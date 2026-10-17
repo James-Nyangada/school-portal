@@ -35,6 +35,7 @@ import AuthGuardRedirect from '@auth/AuthGuardRedirect';
 import FuseSvgIcon from '@fuse/core/FuseSvgIcon';
 import { MaterialReactTable, useMaterialReactTable, type MRT_ColumnDef } from 'material-react-table';
 import { useSnackbar } from 'notistack';
+import { BACKEND_URL } from '@/lib/backend';
 
 type Campaign = {
 	id: string;
@@ -119,7 +120,7 @@ export default function AdminCommunications() {
 
 		setLoading(true);
 		try {
-			const res = await fetch(`http://localhost:4000/api/communications/campaigns?t=${Date.now()}`, {
+			const res = await fetch(`${BACKEND_URL}/api/communications/campaigns?t=${Date.now()}`, {
 				headers: {
 					Authorization: `Bearer ${token}`,
 					'Cache-Control': 'no-cache',
@@ -150,7 +151,7 @@ export default function AdminCommunications() {
 		setResolving(true);
 		setResolvedAudience(null);
 		try {
-			const res = await fetch('http://localhost:4000/api/communications/resolve-audience', {
+			const res = await fetch(`${BACKEND_URL}/api/communications/resolve-audience`, {
 				method: 'POST',
 				headers: {
 					Authorization: `Bearer ${token}`,
@@ -188,7 +189,7 @@ export default function AdminCommunications() {
 
 			if (campaignType === 'EMAIL') payload.subject = subject;
 
-			const res = await fetch('http://localhost:4000/api/communications/campaigns', {
+			const res = await fetch(`${BACKEND_URL}/api/communications/campaigns`, {
 				method: 'POST',
 				headers: {
 					Authorization: `Bearer ${token}`,

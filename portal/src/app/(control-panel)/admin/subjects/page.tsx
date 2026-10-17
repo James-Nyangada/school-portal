@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useSession } from 'next-auth/react';
+import useToast from '@/hooks/useToast';
 import {
 	Typography,
 	Button,
@@ -17,27 +18,39 @@ import {
 	DialogContent,
 	DialogActions,
 	TextField,
-	IconButton
+	IconButton,
+	Tooltip
 } from '@mui/material';
 import FusePageSimple from '@fuse/core/FusePageSimple';
 import AuthGuardRedirect from '@auth/AuthGuardRedirect';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
+import AddIcon from '@mui/icons-material/Add';
+import { BACKEND_URL } from '@/lib/backend';
+
+type SubjectRow = {
+	id: string;
+	name: string;
+	code: string;
+	_count?: { taughtBy: number; classSubjects: number };
+};
 
 export default function AdminSubjects() {
+	const { notify, confirm } = useToast();
 	const { data: session } = useSession();
-	const token = (session as any)?.backendToken;
+	const token = (session as { backendToken?: string } | null)?.backendToken;
 
-	const [subjects, setSubjects] = useState<any[]>([]);
+	const [subjects, setSubjects] = useState<SubjectRow[]>([]);
+	const [loading, setLoading] = useState(true);
 	const [open, setOpen] = useState(false);
 	const [editingId, setEditingId] = useState<string | null>(null);
-	const [formData, setFormData] = useState({ name: '', code: '', description: '' });
+	const [formData, setFormData] = useState({ name: '', code: '' });
 
 	const fetchSubjects = async () => {
 		if (!token) return;
 
 		try {
-			const res = await fetch('http://localhost:4000/api/subjects', {
+			const res = await fetch(`${BACKEND_URL}/api/subjects`, {
 				headers: { Authorization: `Bearer ${token}` }
 			});
 
@@ -46,6 +59,8 @@ export default function AdminSubjects() {
 			}
 		} catch (e) {
 			console.error(e);
+		} finally {
+			setLoading(false);
 		}
 	};
 
@@ -53,13 +68,13 @@ export default function AdminSubjects() {
 		fetchSubjects();
 	}, [token]);
 
-	const handleOpen = (sub?: any) => {
+	const handleOpen = (sub?: SubjectRow) => {
 		if (sub) {
 			setEditingId(sub.id);
-			setFormData({ name: sub.name || '', code: sub.code || '', description: sub.description || '' });
+			setFormData({ name: sub.name || '', code: sub.code || '' });
 		} else {
 			setEditingId(null);
-			setFormData({ name: '', code: '', description: '' });
+			setFormData({ name: '', code: '' });
 		}
 
 		setOpen(true);
@@ -68,10 +83,16 @@ export default function AdminSubjects() {
 	const handleClose = () => setOpen(false);
 
 	const handleSave = async () => {
+		const name = formData.name.trim();
+		const code = formData.code.trim().toUpperCase();
+
+		if (!name || !code) {
+			notify('Subject name and code are required', 'error');
+			return;
+		}
+
 		try {
-			const url = editingId
-				? `http://localhost:4000/api/subjects/${editingId}`
-				: 'http://localhost:4000/api/subjects';
+			const url = editingId ? `${BACKEND_URL}/api/subjects/${editingId}` : `${BACKEND_URL}/api/subjects`;
 			const method = editingId ? 'PATCH' : 'POST';
 			const res = await fetch(url, {
 				method,
@@ -79,31 +100,46 @@ export default function AdminSubjects() {
 					'Content-Type': 'application/json',
 					Authorization: `Bearer ${token}`
 				},
-				body: JSON.stringify(formData)
+				body: JSON.stringify({ name, code })
 			});
 
 			if (res.ok) {
 				fetchSubjects();
 				handleClose();
 			} else {
-				alert('Failed to save subject');
+				const body = await res.json().catch(() => null);
+				notify(body?.error ?? 'Failed to save subject', 'error');
 			}
-		} catch (e) {
-			alert('Error saving subject');
+		} catch {
+			notify('Error saving subject', 'error');
 		}
 	};
 
-	const handleDelete = async (id: string) => {
-		if (!confirm('Are you sure you want to delete this subject?')) return;
+	const handleDelete = async (sub: SubjectRow) => {
+		const classCount = sub._count?.classSubjects ?? 0;
+		const confirmed = await confirm(
+			classCount
+				? `${sub.name} is taught in ${classCount} ${classCount === 1 ? 'class' : 'classes'}. Deleting it removes it from those classes. Continue?`
+				: `Are you sure you want to delete ${sub.name}?`,
+			{
+				confirmText: 'Delete',
+				destructive: true
+			}
+		);
+
+		if (!confirmed) return;
 
 		try {
-			const res = await fetch(`http://localhost:4000/api/subjects/${id}`, {
+			const res = await fetch(`${BACKEND_URL}/api/subjects/${sub.id}`, {
 				method: 'DELETE',
 				headers: { Authorization: `Bearer ${token}` }
 			});
 
 			if (res.ok) {
 				fetchSubjects();
+			} else {
+				const body = await res.json().catch(() => null);
+				notify(body?.error ?? 'Failed to delete subject', 'error');
 			}
 		} catch (e) {
 			console.error(e);
@@ -113,63 +149,102 @@ export default function AdminSubjects() {
 	return (
 		<AuthGuardRedirect auth={['SUPER_ADMIN', 'ADMIN']}>
 			<FusePageSimple
-				header={
-					<div className="flex w-full flex-col px-24 pt-24">
-						<div className="flex w-full flex-col items-center justify-between sm:flex-row">
-							<Typography className="text-4xl font-extrabold tracking-tight">Manage Subjects</Typography>
+				content={
+					<div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 sm:py-8">
+						<div className="flex flex-wrap items-end justify-between gap-4">
+							<div>
+								<Typography className="text-3xl font-extrabold tracking-tight">
+									Manage Subjects
+								</Typography>
+								<Typography className="mt-1 text-sm text-gray-500">
+									{subjects.length} {subjects.length === 1 ? 'subject' : 'subjects'} offered by the
+									school.
+								</Typography>
+							</div>
 							<Button
 								variant="contained"
 								color="secondary"
-								className="mt-16 rounded-full sm:mt-0"
+								className="rounded-full"
+								startIcon={<AddIcon />}
 								onClick={() => handleOpen()}
 							>
 								Add New Subject
 							</Button>
 						</div>
-					</div>
-				}
-				content={
-					<div className="mx-auto flex w-full max-w-7xl flex-col gap-32 px-24 py-32">
-						<Paper className="bg-card flex flex-auto flex-col rounded-2xl p-24 shadow">
+
+						<Paper className="bg-card overflow-hidden rounded-2xl shadow">
 							<TableContainer>
 								<Table>
 									<TableHead>
 										<TableRow>
-											<TableCell>Name</TableCell>
-											<TableCell>Code</TableCell>
-											<TableCell>Description</TableCell>
-											<TableCell align="right">Actions</TableCell>
+											<TableCell className="font-semibold">Name</TableCell>
+											<TableCell className="font-semibold">Code</TableCell>
+											<TableCell
+												className="font-semibold"
+												align="right"
+											>
+												Teachers
+											</TableCell>
+											<TableCell
+												className="font-semibold"
+												align="right"
+											>
+												Classes
+											</TableCell>
+											<TableCell
+												className="font-semibold"
+												align="right"
+											>
+												Actions
+											</TableCell>
 										</TableRow>
 									</TableHead>
 									<TableBody>
 										{subjects.map((sub) => (
-											<TableRow key={sub.id}>
-												<TableCell>{sub.name}</TableCell>
-												<TableCell>{sub.code}</TableCell>
-												<TableCell>{sub.description}</TableCell>
-												<TableCell align="right">
-													<IconButton
-														onClick={() => handleOpen(sub)}
-														color="primary"
-													>
-														<EditIcon />
-													</IconButton>
-													<IconButton
-														onClick={() => handleDelete(sub.id)}
-														color="error"
-													>
-														<DeleteIcon />
-													</IconButton>
+											<TableRow
+												key={sub.id}
+												hover
+											>
+												<TableCell className="font-medium">{sub.name}</TableCell>
+												<TableCell>
+													<span className="rounded bg-gray-100 px-2 py-0.5 font-mono text-xs font-semibold text-gray-700">
+														{sub.code}
+													</span>
+												</TableCell>
+												<TableCell align="right">{sub._count?.taughtBy ?? 0}</TableCell>
+												<TableCell align="right">{sub._count?.classSubjects ?? 0}</TableCell>
+												<TableCell
+													align="right"
+													className="whitespace-nowrap"
+												>
+													<Tooltip title="Edit">
+														<IconButton
+															size="small"
+															onClick={() => handleOpen(sub)}
+														>
+															<EditIcon fontSize="small" />
+														</IconButton>
+													</Tooltip>
+													<Tooltip title="Delete">
+														<IconButton
+															size="small"
+															onClick={() => handleDelete(sub)}
+															color="error"
+														>
+															<DeleteIcon fontSize="small" />
+														</IconButton>
+													</Tooltip>
 												</TableCell>
 											</TableRow>
 										))}
 										{subjects.length === 0 && (
 											<TableRow>
 												<TableCell
-													colSpan={4}
+													colSpan={5}
 													align="center"
+													className="py-12 text-gray-500"
 												>
-													No subjects found
+													{loading ? 'Loading subjects…' : 'No subjects found'}
 												</TableCell>
 											</TableRow>
 										)}
@@ -186,30 +261,27 @@ export default function AdminSubjects() {
 						>
 							<DialogTitle>{editingId ? 'Edit Subject' : 'Add Subject'}</DialogTitle>
 							<DialogContent>
-								<div className="mt-8 flex flex-col gap-16">
+								<div className="mt-2 flex flex-col gap-4">
 									<TextField
 										label="Subject Name"
 										value={formData.name}
 										onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+										required
 										fullWidth
 									/>
 									<TextField
 										label="Code"
 										value={formData.code}
-										onChange={(e) => setFormData({ ...formData, code: e.target.value })}
+										onChange={(e) =>
+											setFormData({ ...formData, code: e.target.value.toUpperCase() })
+										}
+										helperText="Short unique code, e.g. MATH or ENG"
+										required
 										fullWidth
-									/>
-									<TextField
-										label="Description"
-										value={formData.description}
-										onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-										fullWidth
-										multiline
-										rows={3}
 									/>
 								</div>
 							</DialogContent>
-							<DialogActions className="p-16">
+							<DialogActions className="px-6 pb-4">
 								<Button onClick={handleClose}>Cancel</Button>
 								<Button
 									onClick={handleSave}

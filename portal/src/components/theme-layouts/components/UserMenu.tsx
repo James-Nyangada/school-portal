@@ -8,7 +8,6 @@ import { useState } from 'react';
 import Link from '@fuse/core/Link';
 import FuseSvgIcon from '@fuse/core/FuseSvgIcon';
 import { darken } from '@mui/material/styles';
-import Tooltip from '@mui/material/Tooltip';
 import clsx from 'clsx';
 import Popover, { PopoverProps } from '@mui/material/Popover';
 import useUser from '@auth/useUser';
@@ -40,12 +39,21 @@ function UserMenu(props: UserMenuProps) {
 		return null;
 	}
 
+	const role = Array.isArray(user.role) ? user.role[0] : user.role;
+	const roleLabel = role
+		? role
+				.toLowerCase()
+				.split('_')
+				.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+				.join(' ')
+		: '';
+
 	return (
 		<>
 			<Button
 				className={clsx(
 					'user-menu flex shrink-0 justify-start rounded-xl px-2 py-2 hover:bg-gray-50',
-					onlyAvatar ? 'min-w-0 p-0' : dense ? 'h-10 min-h-10 gap-2' : 'h-14 min-h-14 gap-3',
+					onlyAvatar ? 'min-w-0 p-0' : dense ? 'min-h-10 gap-2' : 'min-h-14 gap-3',
 					className
 				)}
 				onClick={userMenuClick}
@@ -74,37 +82,33 @@ function UserMenu(props: UserMenuProps) {
 				)}
 				{!onlyAvatar && (
 					<>
-						<div className={clsx('flex flex-auto flex-col items-start min-w-0', dense ? '' : 'gap-0.5')}>
+						<div className={clsx('flex min-w-0 flex-auto flex-col items-start', dense ? '' : 'gap-0.5')}>
 							<Typography
 								component="span"
 								className={clsx(
-									'title truncate font-bold tracking-tight capitalize text-gray-900 w-full text-left',
+									'title w-full truncate text-left font-bold tracking-tight text-gray-900',
 									dense ? 'text-sm' : 'text-[14px]'
 								)}
 							>
-								{user?.displayName}
+								{user.displayName}
 							</Typography>
-							<Typography
-								className={clsx(
-									'truncate font-medium text-gray-500 w-full text-left',
-									dense ? 'text-xs' : 'text-[12px]'
-								)}
-							>
-								{user?.email}
-							</Typography>
+							{user.email && user.email !== user.displayName && (
+								<Typography
+									className={clsx(
+										'w-full truncate text-left font-medium text-gray-500',
+										dense ? 'text-xs' : 'text-[12px]'
+									)}
+								>
+									{user.email}
+								</Typography>
+							)}
+							{roleLabel && (
+								<span className="mt-0.5 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-blue-700 uppercase">
+									{roleLabel}
+								</span>
+							)}
 						</div>
-						<div className="flex shrink-0 items-center gap-2 text-gray-400">
-							<Tooltip
-								title={
-									<>
-										{user.role?.toString()}
-										{(!user.role || (Array.isArray(user.role) && user.role.length === 0)) &&
-											'Guest'}
-									</>
-								}
-							>
-								<FuseSvgIcon size={16} className="info-icon">lucide:info</FuseSvgIcon>
-							</Tooltip>
+						<div className="flex shrink-0 items-center text-gray-400">
 							<FuseSvgIcon
 								className="arrow"
 								size={16}
@@ -197,4 +201,3 @@ function UserMenu(props: UserMenuProps) {
 }
 
 export default UserMenu;
-

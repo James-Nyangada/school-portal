@@ -4,7 +4,6 @@ import clsx from 'clsx';
 import { memo } from 'react';
 import Navigation from 'src/components/theme-layouts/components/navigation/Navigation';
 import UserMenu from 'src/components/theme-layouts/components/UserMenu';
-import GoToDocBox from 'src/components/theme-layouts/components/GoToDocBox';
 import Logo from '../../../../components/Logo';
 
 const Root = styled('div')(({ theme }) => ({
@@ -59,7 +58,6 @@ function NavbarStyle1Content(props: NavbarStyle1ContentProps) {
 			</StyledContent>
 
 			<div className="flex flex-col gap-3 px-4 pb-3">
-				<GoToDocBox />
 				<UserMenu className="w-full" />
 			</div>
 		</Root>

@@ -25,11 +25,31 @@ interface SignInPageFormProps {
  * Dynamic Form Validation Schema based on role
  */
 const createSchema = (role: Role) => {
+	const parentIdentifierSchema = z
+		.string()
+		.min(1, 'Please enter your email or phone number')
+		.refine(
+			(val) => {
+				const trimmed = val.trim();
+
+				if (!trimmed) return false;
+
+				const isEmail = z.string().email().safeParse(trimmed).success;
+
+				if (isEmail) return true;
+
+				const cleanPhone = trimmed.replace(/[\s\-()]/g, '');
+
+				return /^\+?[0-9]{9,15}$/.test(cleanPhone);
+			},
+			{ message: 'Please enter a valid email address or phone number' }
+		);
+
 	return z.object({
 		identifier:
 			role === 'PARENT'
-				? z.string().min(9, 'Please enter a valid phone number')
-				: z.string().email('You must enter a valid email').nonempty('You must enter an email'),
+				? parentIdentifierSchema
+				: z.string().email('You must enter a valid email').min(1, 'You must enter an email'),
 		password: z.string().min(1, 'Please enter your password.'),
 		remember: z.boolean().optional()
 	});
@@ -41,6 +61,14 @@ const defaultValues = {
 	remember: true
 };
 
+/** Keyed by the LoginError codes thrown in @auth/authJs authorize() */
+const LOGIN_ERRORS: Record<string, string> = {
+	invalid: 'Invalid credentials. Check your details and that the right role is selected.',
+	locked: 'Account locked after too many failed attempts. Try again in 30 minutes or ask an admin to reset your password.',
+	inactive: 'This account is not active. Contact school administration.',
+	unavailable: 'Could not reach the server. Please try again shortly.'
+};
+
 function SignInPageForm({ selectedRole }: SignInPageFormProps) {
 	const router = useRouter();
 	const [loginError, setLoginError] = useState<string | null>(null);
@@ -49,7 +77,7 @@ function SignInPageForm({ selectedRole }: SignInPageFormProps) {
 	const schema = createSchema(selectedRole);
 	type FormType = z.infer<typeof schema>;
 
-	const { control, formState, handleSubmit, reset, trigger } = useForm<FormType>({
+	const { control, formState, handleSubmit, reset } = useForm<FormType>({
 		mode: 'onChange',
 		defaultValues,
 		resolver: zodResolver(schema)
@@ -70,20 +98,20 @@ function SignInPageForm({ selectedRole }: SignInPageFormProps) {
 		try {
 			const result = await signIn('credentials', {
 				redirect: false,
-				identifier: data.identifier,
+				identifier: data.identifier.trim(),
 				password: data.password,
 				role: selectedRole
 			});
 
 			if (result?.error) {
-				setLoginError('Invalid credentials');
+				setLoginError(LOGIN_ERRORS[result.code ?? ''] ?? LOGIN_ERRORS.invalid);
 				setIsLoading(false);
 			} else {
 				// Determine dashboard route based on role
 				const dashboardRoute = `/${selectedRole.toLowerCase()}/dashboard`;
 				router.push(dashboardRoute);
 			}
-		} catch (error) {
+		} catch (_error) {
 			setLoginError('An unexpected error occurred.');
 			setIsLoading(false);
 		}
@@ -105,14 +133,19 @@ function SignInPageForm({ selectedRole }: SignInPageFormProps) {
 				control={control}
 				render={({ field }) => (
 					<FormControl>
-						<FormLabel htmlFor="identifier">{isParent ? 'Phone number' : 'School Email'}</FormLabel>
+						<FormLabel htmlFor="identifier">
+							{isParent ? 'Email or Phone number' : 'School Email'}
+						</FormLabel>
 						<TextField
 							{...field}
+							id="identifier"
 							autoFocus
-							type={isParent ? 'tel' : 'email'}
+							type={isParent ? 'text' : 'email'}
 							error={!!errors.identifier}
 							helperText={errors?.identifier?.message as string}
-							placeholder={isParent ? 'e.g. 0712345678' : 'e.g. jdoe@schoolname.ac.ke'}
+							placeholder={
+								isParent ? 'e.g. parent@example.com or 0712345678' : 'e.g. jdoe@schoolname.ac.ke'
+							}
 							required
 							fullWidth
 						/>

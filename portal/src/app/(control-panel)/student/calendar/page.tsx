@@ -25,19 +25,19 @@ export default function StudentCalendar() {
 		<AuthGuardRedirect auth={['STUDENT']}>
 			<FusePageSimple
 				content={
-					<div className="mx-auto flex w-full max-w-7xl flex-col gap-32 px-24 py-32">
+					<div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 sm:py-8">
 						<Typography className="text-4xl font-extrabold tracking-tight">
 							School Calendar & Events
 						</Typography>
 
-						<Paper className="bg-card flex flex-auto flex-col rounded-2xl p-24 shadow">
-							<div className="flex flex-col gap-24">
+						<Paper className="bg-card flex flex-auto flex-col rounded-2xl p-4 shadow sm:p-6">
+							<div className="flex flex-col gap-4">
 								{events.map((event, index) => (
 									<div
 										key={index}
-										className="flex items-start gap-16 rounded-r-2xl border-l-4 border-blue-500 bg-blue-50/30 p-16"
+										className="flex items-start gap-4 rounded-r-2xl border-l-4 border-blue-500 bg-blue-50/30 p-4 dark:bg-blue-500/10"
 									>
-										<div className="rounded-lg bg-blue-50 p-8 text-blue-500">
+										<div className="shrink-0 rounded-lg bg-blue-50 p-2 text-blue-500 dark:bg-blue-500/20">
 											<FuseSvgIcon size={24}>lucide:calendar-days</FuseSvgIcon>
 										</div>
 										<div>
@@ -50,7 +50,7 @@ export default function StudentCalendar() {
 											<Typography
 												variant="caption"
 												color="text.secondary"
-												className="mb-8 block"
+												className="mb-2 block"
 											>
 												{event.date}
 											</Typography>
